@@ -56,8 +56,24 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
 
     ocupa = {}
     for p in placas:
+        # Antes se transformaban los 25 millones de puntos contra CADA placa. Una
+        # placa ocupa una esquina de la caja: primero se recortan los puntos a su
+        # caja envolvente en el mundo y solo esos se transforman. En un edificio
+        # de 166 placas eso es la diferencia entre nueve minutos y medio.
+        b = p['poly'].bounds
+        esquinas = np.array([[b[0], b[1], 0.0], [b[2], b[1], 0.0],
+                             [b[2], b[3], 0.0], [b[0], b[3], 0.0]])
+        holgura = t_mod / 2.0 + paso
+        caja = np.hstack([esquinas, np.ones((4, 1))])
+        W = (p['a_mundo'] @ caja.T).T[:, :3]
+        lo_p, hi_p = W.min(axis=0) - holgura, W.max(axis=0) + holgura
+        cerca = np.nonzero(np.all((G >= lo_p) & (G <= hi_p), axis=1))[0]
+        if len(cerca) == 0:
+            ocupa[p['id']] = np.zeros(0, dtype=np.int64); continue
+
         inv = np.linalg.inv(p['a_mundo'])
-        L = (inv @ np.hstack([G, np.ones((len(G), 1))]).T).T[:, :3]
+        Gc = G[cerca]
+        L = (inv @ np.hstack([Gc, np.ones((len(Gc), 1))]).T).T[:, :3]
         dentro_w = np.abs(L[:, 2]) <= t_mod / 2.0 - roce_mm / cfg.a_mm
         idx = np.nonzero(dentro_w)[0]
         if len(idx) == 0:
@@ -67,7 +83,7 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
         if g.is_empty:
             ocupa[p['id']] = np.zeros(0, dtype=np.int64); continue
         m2 = shapely.contains_xy(g, L[idx, 0], L[idx, 1])
-        ocupa[p['id']] = idx[m2]
+        ocupa[p['id']] = cerca[idx[m2]]      # de vuelta al indice global
 
     conteo = np.zeros(len(G), dtype=np.int16)
     for v in ocupa.values():
