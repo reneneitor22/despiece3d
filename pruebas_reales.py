@@ -16,9 +16,12 @@ RAIZ = os.path.dirname(os.path.abspath(__file__))
 MODELOS = 'modelos_prueba'
 
 CASOS = [
-    # nombre, modo, ruta, escala, espesor, hoja
+    # nombre, modo, ruta, escala, espesor, hoja, extra
     ('casa_prueba', 'casa', 'out/casa_prueba.stl', 100, 2, '600x900'),
     ('engel', 'casa', MODELOS + '/ladybug/obj/engel-house/AngelHouse_Bauhaus-in-Israel.obj',
+     100, 2, '600x900'),
+    ('engel_env', 'envolvente',
+     MODELOS + '/ladybug/obj/engel-house/AngelHouse_Bauhaus-in-Israel.obj',
      100, 2, '600x900'),
     ('mainstreet', 'casa', MODELOS + '/ladybug/stl-samples/MainStreetPlace.stl',
      500, 2, '600x900'),
@@ -46,14 +49,20 @@ def main(filtro=None):
 
         t0 = time.time()
         salida = 'out_real/' + nombre
-        if modo == 'casa':
-            cod, txt = correr(['cortar_casa.py', ruta, '--escala', str(escala),
-                               '--espesor', str(espesor), '--hoja', hoja,
-                               '--salida', salida])
+        if modo in ('casa', 'envolvente'):
+            args = ['cortar_casa.py', ruta, '--escala', str(escala),
+                    '--espesor', str(espesor), '--hoja', hoja, '--salida', salida]
+            if modo == 'envolvente':
+                args.append('--solo-envolvente')
+            cod, txt = correr(args)
             resumen = next((l for l in txt.splitlines() if l.startswith('placas ')), txt.strip()[:120])
-            cod2, txt2 = correr(['verificar_casa.py', ruta, str(escala),
-                                 '--espesor', str(espesor)])
-            auditoria = next((l for l in txt2.splitlines() if l.startswith('piezas:')), '')
+            if modo == 'envolvente':
+                cod2, txt2, auditoria = 0, '', '(ensamble: se mide en el caso completo)'
+            else:
+                cod2, txt2 = correr(['verificar_casa.py', ruta, str(escala),
+                                     '--espesor', str(espesor)])
+                auditoria = next((l for l in txt2.splitlines()
+                                  if l.startswith('PASA') or l.startswith('NO PASA')), '')
         else:
             cod, txt = correr(['cortar.py', ruta, '--escala', str(escala),
                                '--espesor', str(espesor), '--hoja', hoja,

@@ -30,8 +30,13 @@ Cómo funciona:
 
 ```bash
 python3 cortar_casa.py modelo.stl --escala 100 --espesor 2 --hoja 500x700
-python3 cortar_casa.py modelo.stl --sin-uniones      # todo a tope, para pegar
+python3 cortar_casa.py modelo.stl --sin-uniones        # todo a tope, para pegar
+python3 cortar_casa.py modelo.stl --solo-envolvente    # la caja, sin entrepisos
 ```
+
+`--solo-envolvente` tira un rayo desde cada placa en dirección de su normal: si por
+algún lado se va sin chocar, esa cara mira a la calle. La casa Bauhaus completa son
+143 placas en 2 hojas; su envolvente, 56 en 1.
 
 ### 2. Terreno / topografía — curvas de nivel
 
@@ -70,8 +75,11 @@ python3 verificar.py terreno.stl --escala 100 --espesor 3 --hoja 500x700
 
 `verificar.py` revisa que ninguna pieza se salga de la hoja, que no se encimen, que
 **no se pierda ninguna** por no caber y que el grabado caiga sobre material.
-`verificar_casa.py` afloja solo el paso del muestreo cuando el modelo es grande: un
-edificio a 1:100 son 430 millones de vóxeles a 0.4 mm.
+`verificar_casa.py` mide la interferencia como **fracción del material** y la compara
+contra `--tolerancia` (0.5% por omisión): exigir cero reprobaba hasta la casa de
+prueba, que lleva 0.02% desde siempre y arma bien. También afloja solo el paso del
+muestreo cuando el modelo es grande: un edificio a 1:100 son 430 millones de vóxeles
+a 0.4 mm.
 
 `verificar_casa.py` reconstruye en 3D las piezas ya cortadas y busca pares que ocupen
 el mismo volumen. Si dos piezas chocan, la maqueta no cierra por más bonito que se vea
@@ -117,6 +125,8 @@ los `gen_*.py`. Lo que trae y cómo se resuelve:
 | cuerpos degenerados (vértices colineales) | `oriented_bounds` reventaba y tumbaba todo el despiece | se descarta ese cuerpo y sigue |
 | pieza más grande que la hoja | se tiraba en silencio: el terreno salía sin base | `partir_grandes` la corta con una reja en trozos `<id>.1`, `<id>.2`, que van a tope |
 | edificio con muchos muros interiores | un medianero recibía 154 ranuras y quedaba en encaje de bolillo | se cancelan uniones hasta que cada placa conserve el 55% de su área; esas juntas se pegan |
+| dos placas paralelas casi pegadas (la losa y su firme, el muro y su aplanado) | salían como dos piezas: dos cartones en el mismo lugar | si están más juntas que el propio cartón, **no caben las dos** y se funden en una |
+| edificio de varios pisos | daba entrepisos y muros interiores que nadie quiere | `--solo-envolvente` deja la caja de afuera |
 | modelo enorme (un distrito entero) | tope duro de 600 placas: no entregaba nada | se tira lo que no se corta a esa escala y se cortan las 400 más grandes, diciendo qué quedó fuera |
 
 La regla que ordena varias de esas: **lo que manda es el tamaño en la MAQUETA, no en el
@@ -128,10 +138,13 @@ modelo**. Una placa de 1 m² es una pieza de 10×10 mm a 1:100 y de 2×2 mm a 1:
    por geometría. Con **IFC** (ArchiCAD/Revit) o **.3dm** (Rhino) sabría que algo *es*
    un muro, y dejaría de depender de que el modelo esté bien hecho.
 2. **Interferencia en edificios densos.** Al cancelar uniones para no destruir las
-   placas, esos pares quedan a tope y `recortar_choques` no siempre puede recortarlos
-   (partiría la pieza en dos). En la casa Bauhaus queda 1.8% del material en choque,
-   contra 0.02% en la casa de prueba. Se pega y cierra, pero hay que bajarlo.
-3. **Elegir qué cortar.** Un edificio de cinco pisos da losas y muros interiores que el
-   alumno casi nunca quiere. Falta poder pedir sólo la envolvente, o un corte por piso.
+   placas, esos pares quedan a tope. La casa Bauhaus **completa** queda con 1.24% del
+   material en choque; su **envolvente**, con 0.15% — o sea que el problema vive casi
+   todo en los muros y entrepisos interiores, que es justo lo que el alumno no corta.
+   Para el caso completo, lo que falta es repartir mejor: en vez de cancelar la unión,
+   ponerle la ranura a la OTRA placa del par, para que el muro medianero no cargue
+   con todas.
+3. **Cortar por piso.** Ya se puede pedir sólo la envolvente; falta poder pedir un
+   piso concreto, o la planta arquitectónica.
 4. Escaleras, barandales y muebles: se ignoran por no ser láminas.
 5. Cobro: preview gratis con marca de agua, pago para descargar.
