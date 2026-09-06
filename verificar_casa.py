@@ -14,6 +14,7 @@ from shapely.geometry import Polygon
 from despiece import Config
 from placas import extraer_placas, nombrar
 from uniones import detectar_contactos, aplicar_uniones, recortar_choques
+from estructura import _cortable, MAX_PLACAS
 
 
 def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm=0.05,
@@ -21,6 +22,12 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
     cfg = Config(escala, carton_mm, 0.0, (600, 900), unidades_modelo=unidades)
     m = trimesh.load(ruta, force='mesh')
     placas, _ = extraer_placas(m)
+    # el mismo filtro que aplica el despiece: si una placa no se corta a esta
+    # escala, tampoco tiene por que aparecer en la prueba de ensamble
+    placas = [p for p in placas if _cortable(p, cfg)]
+    if len(placas) > MAX_PLACAS:
+        placas.sort(key=lambda p: -p['area'])
+        placas = placas[:MAX_PLACAS]
     nombrar(placas)
     t_mod = carton_mm / cfg.a_mm
     cont = detectar_contactos(placas, t_mod)
