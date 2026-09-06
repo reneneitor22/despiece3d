@@ -116,7 +116,8 @@ class H(BaseHTTPRequestHandler):
 
 def procesar(ruta_modelo, campos, carpeta, job, nombre):
     import trimesh
-    from despiece import Config, solidificar, rebanar, armar_piezas, acomodar, ROTACIONES_ORTO
+    from despiece import (Config, solidificar, rebanar, armar_piezas, acomodar,
+                          partir_grandes, ROTACIONES_ORTO)
     from estructura import despiece_estructural
     from isometrica import vista
     import exportar
@@ -157,6 +158,7 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
         return {'error': 'saldrian %d laminas. Sube la escala o el espesor.' % len(capas)}
 
     piezas = armar_piezas(capas, vaciar=vaciar)
+    piezas, partidas = partir_grandes(piezas, cfg)
     hojas, grandes = acomodar(piezas, cfg)
     if not hojas:
         return {'error': 'ninguna pieza cabe en la hoja. Sube la escala o usa hoja mas grande.'}
@@ -215,7 +217,7 @@ def _empacar(carpeta, nombre):
 
 def _estructural(m, cfg, carpeta, job, nombre, campos):
     """Modo casa: muros, losas y techos como placas con uniones."""
-    from despiece import acomodar, ROTACIONES_ORTO
+    from despiece import acomodar, partir_grandes, ROTACIONES_ORTO
     from estructura import despiece_estructural
     from isometrica import vista
     import exportar
@@ -225,6 +227,7 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
     if 'error' in info:
         return {'error': info['error']}
 
+    piezas, partidas = partir_grandes(piezas, cfg, rotaciones=ROTACIONES_ORTO)
     hojas, grandes = acomodar(piezas, cfg, rotaciones=ROTACIONES_ORTO)
     if not hojas:
         return {'error': 'ninguna pieza cabe en la hoja. Sube la escala o usa hoja mas grande.'}

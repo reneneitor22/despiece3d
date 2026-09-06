@@ -16,7 +16,8 @@ from placas import extraer_placas, nombrar
 from uniones import detectar_contactos, aplicar_uniones, recortar_choques
 
 
-def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm=0.05):
+def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm=0.05,
+           tope_voxeles=25e6):
     cfg = Config(escala, carton_mm, 0.0, (600, 900), unidades_modelo=unidades)
     m = trimesh.load(ruta, force='mesh')
     placas, _ = extraer_placas(m)
@@ -28,11 +29,23 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
     print('recortes de choque: %d' % nr)
     [print('   aviso:', a) for a in av]
 
-    paso = paso_mm / cfg.a_mm                      # paso del muestreo en unidades del modelo
     lo, hi = m.bounds[0] - t_mod, m.bounds[1] + t_mod
+    # Un edificio real a 1:100 son cientos de millones de voxeles a 0.4 mm y la
+    # maquina se queda sin memoria. Se afloja el paso hasta caber en el tope,
+    # avisando: la medicion pierde resolucion, no validez.
+    caja_mm = (hi - lo) * cfg.a_mm
+    paso_min = float(np.cbrt(max(caja_mm.prod(), 1.0) / float(tope_voxeles)))
+    if paso_min > paso_mm:
+        print('OJO: la caja mide %.0f x %.0f x %.0f mm de maqueta; el paso sube de '
+              '%.2f a %.2f mm para no pasar de %d voxeles'
+              % (caja_mm[0], caja_mm[1], caja_mm[2], paso_mm, paso_min, tope_voxeles))
+        paso_mm = paso_min
+    roce_mm = min(roce_mm, paso_mm / 2.0)          # el roce no puede comerse el voxel
+
+    paso = paso_mm / cfg.a_mm                      # paso del muestreo en unidades del modelo
     ejes = [np.arange(lo[k], hi[k] + paso, paso) for k in range(3)]
     G = np.stack(np.meshgrid(*ejes, indexing='ij'), -1).reshape(-1, 3)
-    print('muestreo: %d puntos (%.1f mm de maqueta por voxel)' % (len(G), paso_mm))
+    print('muestreo: %d puntos (%.2f mm de maqueta por voxel)' % (len(G), paso_mm))
 
     ocupa = {}
     for p in placas:
@@ -80,6 +93,15 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
 
 
 if __name__ == '__main__':
-    r = probar(sys.argv[1] if len(sys.argv) > 1 else 'out/casa_prueba.stl',
-               escala=float(sys.argv[2]) if len(sys.argv) > 2 else 100.0)
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('modelo', nargs='?', default='out/casa_prueba.stl')
+    ap.add_argument('escala', nargs='?', type=float, default=100.0)
+    ap.add_argument('--espesor', type=float, default=2.0)
+    ap.add_argument('--unidades', default='m', choices=['m', 'cm', 'mm'])
+    ap.add_argument('--paso', type=float, default=0.4, help='mm de maqueta por voxel')
+    ap.add_argument('--tope-voxeles', type=float, default=25e6)
+    a = ap.parse_args()
+    r = probar(a.modelo, escala=a.escala, carton_mm=a.espesor, paso_mm=a.paso,
+               unidades=a.unidades, tope_voxeles=a.tope_voxeles)
     sys.exit(1 if r else 0)

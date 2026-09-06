@@ -2,7 +2,7 @@
 """CLI: python3 cortar.py modelo.stl --escala 200 --espesor 3 --hoja 500x700"""
 import argparse, os, sys, time
 import trimesh
-from despiece import Config, solidificar, rebanar, armar_piezas, acomodar
+from despiece import Config, solidificar, rebanar, armar_piezas, acomodar, partir_grandes
 import exportar
 
 
@@ -23,6 +23,9 @@ def correr(ruta, cfg, salida, nombre=None):
     if not capas:
         sys.exit('no salieron capas: revisa unidades/escala/espesor')
     piezas = armar_piezas(capas, vaciar=cfg.vaciar)
+    piezas, partidas = partir_grandes(piezas, cfg)
+    for pid, n in partidas:
+        print('  pieza %s no cabia en la hoja: va partida en %d, se pegan a tope' % (pid, n))
     hojas, grandes = acomodar(piezas, cfg)
 
     os.makedirs(salida, exist_ok=True)

@@ -9,7 +9,7 @@ Modo actual: CURVAS DE NIVEL (apilado de rebanadas horizontales).
 import math
 import numpy as np
 import trimesh
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.ops import unary_union
 from rectpack import newPacker, PackingMode, PackingBin
 
@@ -289,6 +289,104 @@ def _mascara(geom, res):
             dr.polygon([((x - minx) / res, (y - miny) / res) for x, y in r.coords], fill=0)
     arr = binary_dilation(np.array(img, dtype=bool), iterations=1)
     return arr, minx, miny
+
+
+def _cabe(poly, cfg, res, rotaciones):
+    """True si la pieza entra en la hoja util con alguna de las rotaciones."""
+    W = cfg.hoja[0] - 2 * cfg.margen_mm
+    H = cfg.hoja[1] - 2 * cfg.margen_mm
+    holgura = cfg.sep_mm + 2 * res
+    for ang in (rotaciones or ROTACIONES):
+        g = aff.rotate(poly, ang, origin='centroid') if ang else poly
+        minx, miny, maxx, maxy = g.bounds
+        if (maxx - minx) + holgura <= W and (maxy - miny) + holgura <= H:
+            return True
+    return False
+
+
+def partir_grandes(piezas, cfg, res=2.0, rotaciones=None, max_trozos=64):
+    """Una pieza mas grande que la hoja no se puede cortar: hasta ahora se tiraba
+    en silencio y la maqueta salia sin base (el terreno de Marte perdia 23 de 235
+    piezas, entre ellas TODAS las capas de abajo).
+
+    Se parte con una reja en trozos que si caben. Los trozos van a tope: en un
+    terreno cada capa se pega plana sobre la de abajo, que es la que amarra la
+    junta, asi que no necesitan diente. Se numeran <id>.1, <id>.2 ... y quedan
+    marcados con 'partida_de' para que la guia diga de donde salio cada uno.
+    """
+    W = cfg.hoja[0] - 2 * cfg.margen_mm
+    H = cfg.hoja[1] - 2 * cfg.margen_mm
+    holgura = cfg.sep_mm + 2 * res
+    util_w, util_h = W - holgura, H - holgura
+    if util_w <= 0 or util_h <= 0:
+        return piezas, []
+
+    salida, partidas = [], []
+    for pz in piezas:
+        poly = pz['poly']
+        if poly.is_empty or _cabe(poly, cfg, res, rotaciones):
+            salida.append(pz)
+            continue
+
+        # la reja se traza sobre la orientacion que menos cortes necesita
+        mejor = None
+        for ang in (rotaciones or ROTACIONES):
+            g = aff.rotate(poly, ang, origin='centroid') if ang else poly
+            minx, miny, maxx, maxy = g.bounds
+            nx = int(math.ceil((maxx - minx) / util_w))
+            ny = int(math.ceil((maxy - miny) / util_h))
+            if nx * ny < 1:
+                continue
+            if mejor is None or nx * ny < mejor[0]:
+                mejor = (nx * ny, ang, g, nx, ny)
+        if mejor is None or mejor[0] > max_trozos:
+            salida.append(pz)                     # ni partiendola cabe: que avise acomodar
+            continue
+
+        _, ang, g, nx, ny = mejor
+        minx, miny, maxx, maxy = g.bounds
+        ancho = (maxx - minx) / nx
+        alto = (maxy - miny) / ny
+        guia = pz.get('guia')
+        if guia is not None and ang:
+            guia = aff.rotate(guia, ang, origin=poly.centroid)
+
+        trozos = []
+        for iy in range(ny):
+            for ix in range(nx):
+                celda = box(minx + ix * ancho - 1e-6, miny + iy * alto - 1e-6,
+                            minx + (ix + 1) * ancho + 1e-6, miny + (iy + 1) * alto + 1e-6)
+                try:
+                    corte = g.intersection(celda)
+                except Exception:
+                    continue
+                if corte.is_empty:
+                    continue
+                for parte in (corte.geoms if corte.geom_type.startswith('Multi') else [corte]):
+                    if parte.geom_type != 'Polygon' or parte.area < 1.0:
+                        continue
+                    trozos.append((parte, celda))
+
+        if len(trozos) < 2:
+            salida.append(pz)
+            continue
+
+        for k, (parte, celda) in enumerate(trozos, 1):
+            hijo = dict(pz)
+            hijo['id'] = '%s.%d' % (pz['id'], k)
+            hijo['poly'] = parte
+            hijo['partida_de'] = pz['id']
+            hijo['trozo'] = (k, len(trozos))
+            if guia is not None:
+                try:
+                    gg = guia.intersection(celda)
+                    hijo['guia'] = None if gg.is_empty else gg
+                except Exception:
+                    hijo['guia'] = None
+            salida.append(hijo)
+        partidas.append((pz['id'], len(trozos)))
+
+    return salida, partidas
 
 
 def acomodar(piezas, cfg, res=2.0, rotaciones=None):

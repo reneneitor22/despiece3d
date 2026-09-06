@@ -2,7 +2,7 @@
 """CLI del modo estructural: modelo 3D -> muros, losas y techos cortables."""
 import argparse, os, sys, time
 import trimesh
-from despiece import Config, acomodar, ROTACIONES_ORTO
+from despiece import Config, acomodar, partir_grandes, ROTACIONES_ORTO
 from estructura import despiece_estructural
 from isometrica import vista
 import exportar
@@ -26,6 +26,7 @@ piezas, info = despiece_estructural(m, cfg, con_uniones=not a.sin_uniones)
 if 'error' in info:
     sys.exit(info['error'])
 
+piezas, partidas = partir_grandes(piezas, cfg, rotaciones=ROTACIONES_ORTO)
 hojas, grandes = acomodar(piezas, cfg, rotaciones=ROTACIONES_ORTO)
 os.makedirs(a.salida, exist_ok=True)
 nombre = os.path.splitext(os.path.basename(a.modelo))[0]
@@ -52,6 +53,8 @@ print('placas %d %s | uniones %d | recortes %d | hojas %d | %.1fs'
          len(hojas), time.time() - t0))
 for r, e_, lg, d, modo in info['contactos']:
     print('   %-3s + %-3s  %5.2f m  %s x%d' % (r, e_, lg, modo, d))
+for pid, n in partidas:
+    print('   pieza %s no cabia en la hoja: va partida en %d, se pegan a tope' % (pid, n))
 for av in info.get('avisos', []):
     print('   aviso: %s' % av)
 if grandes:
