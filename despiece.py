@@ -250,6 +250,17 @@ def armar_piezas(capas, vaciar=True, ceja_mm=7.0, min_hueco_mm2=900.0):
                 except Exception:
                     pass
 
+            # al vaciar, la huella de la capa de arriba cruza el hueco recien
+            # abierto: ese tramo se grabaria sobre el aire (y sobre la cama del
+            # laser). La huella solo vale donde queda material.
+            if guia is not None:
+                try:
+                    guia = guia.intersection(poly)
+                    if guia.is_empty:
+                        guia = None
+                except Exception:
+                    pass
+
             piezas.append({
                 'id': _id_pieza(capa['n'], j, len(capa['polys'])),
                 'capa': capa['n'],
@@ -378,8 +389,12 @@ def partir_grandes(piezas, cfg, res=2.0, rotaciones=None, max_trozos=64):
             hijo['partida_de'] = pz['id']
             hijo['trozo'] = (k, len(trozos))
             if guia is not None:
+                # OJO: se recorta contra el TROZO, no contra la celda de la reja.
+                # Contra la celda, la huella grabada se sale de la pieza (y de la
+                # hoja) y ademas los bordes de la reja quedan grabados como lineas
+                # que no significan nada.
                 try:
-                    gg = guia.intersection(celda)
+                    gg = guia.intersection(parte)
                     hijo['guia'] = None if gg.is_empty else gg
                 except Exception:
                     hijo['guia'] = None

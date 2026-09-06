@@ -10,16 +10,41 @@ from uniones import detectar_contactos, aplicar_uniones, recortar_choques
 
 DIENTE_OBJ_MM = 12.0      # ancho buscado del diente, en mm de maqueta
 HOLGURA_MM = 0.06         # juego de la ranura
+MIN_LADO_MM = 2.0         # mm de maqueta: mas angosto que esto no se corta ni se pega
+MIN_AREA_MM2 = 20.0       # mm2 de maqueta: menos que esto es confeti
+MAX_PLACAS = 400          # arriba de esto ya no es maqueta escolar
+
+
+def _cortable(placa, cfg):
+    """True si la placa, llevada a la escala pedida, se puede cortar de verdad."""
+    g = placa['poly']
+    if g.is_empty:
+        return False
+    minx, miny, maxx, maxy = g.bounds
+    lado = min(maxx - minx, maxy - miny) * cfg.a_mm
+    return lado >= MIN_LADO_MM and g.area * cfg.a_mm * cfg.a_mm >= MIN_AREA_MM2
 
 
 def despiece_estructural(mesh, cfg, con_uniones=True):
     """Devuelve (piezas_mm, info). Las piezas traen 'poly' en mm de maqueta."""
     placas, descartados = extraer_placas(mesh)
-    if len(placas) > 600:
-        return [], {'error': 'salieron %d placas: el modelo trae demasiado detalle '
-                             '(muebles, molduras, malla sucia). Exporta solo muros, '
-                             'losas y techos, o simplifica la malla.' % len(placas),
-                    'descartados': descartados}
+
+    # Lo que manda no es el tamano en el modelo, es el de la MAQUETA: una placa
+    # de 1 m2 es una pieza de 10x10 mm a 1:100 y de 2x2 mm a 1:500. Abajo de
+    # MIN_LADO_MM no hay tijera ni dedos que la corten y peguen.
+    antes = len(placas)
+    placas = [p for p in placas if _cortable(p, cfg)]
+    incortables = antes - len(placas)
+
+    # Un distrito urbano entero da miles de placas. No es un error del modelo:
+    # es que no cabe en una maqueta escolar. Se cortan las grandes y se dice
+    # cuantas quedaron fuera, en vez de rendirse y no entregar nada.
+    fuera_por_tope = []
+    if len(placas) > MAX_PLACAS:
+        placas.sort(key=lambda p: -p['area'])
+        fuera_por_tope = placas[MAX_PLACAS:]
+        placas = placas[:MAX_PLACAS]
+
     if not placas:
         return [], {'error': 'no se encontraron muros ni losas. '
                              '¿El modelo trae cuerpos con espesor?',
@@ -30,6 +55,17 @@ def despiece_estructural(mesh, cfg, con_uniones=True):
     t_mod = cfg.espesor_mm / cfg.a_mm
     contactos, n_uniones = [], 0
     n_recortes, avisos_recorte = 0, []
+    avisos_previos = []
+    if incortables:
+        avisos_previos.append('%d placas quedan mas chicas que %.0f mm a 1:%d y no se '
+                              'pueden cortar: no van en las hojas'
+                              % (incortables, MIN_LADO_MM, int(cfg.escala)))
+    if fuera_por_tope:
+        avisos_previos.append('el modelo da %d placas cortables; se cortan las %d mas '
+                              'grandes y quedan %d fuera. Sube la escala o exporta solo '
+                              'muros, losas y techos'
+                              % (len(placas) + len(fuera_por_tope), MAX_PLACAS,
+                                 len(fuera_por_tope)))
     if con_uniones:
         contactos = detectar_contactos(placas, t_mod)
         n_uniones = aplicar_uniones(placas, contactos, t_mod,
@@ -66,9 +102,11 @@ def despiece_estructural(mesh, cfg, con_uniones=True):
 
     info = {
         'n_placas': len(placas),
+        'incortables': incortables,
+        'fuera_por_tope': [p.get('id', '?') for p in fuera_por_tope],
         'n_uniones': n_uniones,
         'n_recortes': n_recortes,
-        'avisos': avisos_recorte,
+        'avisos': avisos_previos + avisos_recorte,
         'descartados': descartados,
         'por_tipo': {t: sum(1 for p in placas if p['tipo'] == t)
                      for t in ('muro', 'losa', 'techo')},

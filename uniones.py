@@ -10,6 +10,10 @@ import numpy as np
 from shapely.geometry import LineString, Polygon, Point, MultiPolygon
 from shapely.ops import unary_union
 
+# una placa no puede quedar con menos de esta fraccion de su area por culpa
+# de las uniones: abajo de eso ya no es pieza, es encaje de bolillo
+MINIMO_AREA = 0.55
+
 TOL_PERP = 0.90        # |nA . nB| menor a esto = se cruzan en angulo util
                        # (0.90 = desde 26 grados; el techo llega al muro a 28)
 MIN_CONTACTO = 0.15    # m de modelo: contacto mas corto no se dedea
@@ -152,14 +156,17 @@ def aplicar_uniones(placas, contactos, t_placa_modelo, diente_obj, holgura_model
     DEDOS   se encuentran canto con canto (esquinas, muro parado en el filo de la losa)
             -> dientes alternados: donde una sale, la otra se mete.
     """
+    # cada trozo se guarda con el contacto del que salio: si luego hay que
+    # cancelar una union, se quita de LAS DOS placas del par
     add = {i: [] for i in range(len(placas))}
     sub = {i: [] for i in range(len(placas))}
     marcas = {i: [] for i in range(len(placas))}
+    del_contacto = {}                       # id(trozo) -> indice del contacto
     t = t_placa_modelo
     LEJOS = t * 40 + 1.0
     hechas = 0
 
-    for c in contactos:
+    for ic, c in enumerate(contactos):
         pe, pr = placas[c['espiga']], placas[c['ranura']]
         re_, rr_ = _recta_local(pe, c['p0'], c['d']), _recta_local(pr, c['p0'], c['d'])
         if re_ is None or rr_ is None:
@@ -188,8 +195,15 @@ def aplicar_uniones(placas, contactos, t_placa_modelo, diente_obj, holgura_model
             n += 1
         paso = (c['t1'] - c['t0']) / n
 
+        def anota(cubeta, placa_i, geo):
+            cubeta[placa_i].append(geo)
+            del_contacto[id(geo)] = ic
+            return geo
+
         marcas[c['ranura']].append(_rect(qr, ur, perp_r, c['t0'], c['t1'], -tt / 2, tt / 2))
         marcas[c['espiga']].append(_rect(qe, ue, perp_e, c['t0'], c['t1'], -tt / 2, tt / 2))
+        del_contacto[id(marcas[c['ranura']][-1])] = ic
+        del_contacto[id(marcas[c['espiga']][-1])] = ic
 
         # ¿la ranura cabe entera dentro de la receptora?
         h = tt / 2.0 + holgura_modelo
@@ -217,11 +231,11 @@ def aplicar_uniones(placas, contactos, t_placa_modelo, diente_obj, holgura_model
                 if k % 2 == 0:
                     g = crecer(pe, qe, ue, perp_e, ta, tb, max(tt / 2, w_e))
                     if g is not None:
-                        add[c['espiga']].append(g)
+                        anota(add, c['espiga'], g)
                 else:
-                    sub[c['espiga']].append(_rect(qe, ue, perp_e, ta, tb, -tt / 2, LEJOS))
+                    anota(sub, c['espiga'], _rect(qe, ue, perp_e, ta, tb, -tt / 2, LEJOS))
             for r in ranuras:
-                sub[c['ranura']].append(r)
+                anota(sub, c['ranura'], r)
         else:
             c['modo'] = 'dedos'
             for k in range(n):
@@ -234,11 +248,13 @@ def aplicar_uniones(placas, contactos, t_placa_modelo, diente_obj, holgura_model
                         (pr, c['ranura'], qr, ur, perp_r, obj_r)):
                     g = crecer(placa, q, u, perp, ta, tb, obj)
                     if g is not None:
-                        add[placa_i].append(g)
+                        anota(add, placa_i, g)
                     else:
-                        sub[placa_i].append(_rect(q, u, perp, ta, tb, obj, LEJOS))
+                        anota(sub, placa_i, _rect(q, u, perp, ta, tb, obj, LEJOS))
         c['dientes'] = (n + 1) // 2
         hechas += 1
+
+    canceladas = _cuidar_placas(placas, contactos, add, sub, del_contacto)
 
     for i, p in enumerate(placas):
         g = p['poly']
@@ -252,9 +268,69 @@ def aplicar_uniones(placas, contactos, t_placa_modelo, diente_obj, holgura_model
         p['poly'] = g
         p['n_dientes'] = len(add[i])
         p['n_ranuras'] = len(sub[i])
-        m = unary_union(marcas[i]).intersection(g) if marcas[i] else None
+        vivas = [m for m in marcas[i] if del_contacto.get(id(m)) not in canceladas]
+        m = unary_union(vivas).intersection(g) if vivas else None
         p['marcas'] = _solo_poligonos(m)
-    return hechas
+    return hechas - len(canceladas)
+
+
+def _figura(base, mas, menos):
+    g = base
+    if mas:
+        g = unary_union([g] + mas).buffer(0)
+    if menos:
+        g = g.difference(unary_union(menos).buffer(0))
+    if g.geom_type == 'MultiPolygon':
+        g = max(g.geoms, key=lambda x: x.area)
+    return g
+
+
+def _cuidar_placas(placas, contactos, add, sub, del_contacto, minimo=MINIMO_AREA):
+    """Una union por cada placa que llega esta bien en una casita de nueve piezas.
+    En un edificio real un muro medianero recibe CIENTO CINCUENTA Y CUATRO ranuras
+    y queda hecho encaje de bolillo: 208 m2 de muro terminan en 12.
+
+    Aqui se cancelan uniones hasta que cada placa conserve al menos `minimo` de su
+    area. Se tumban primero los contactos mas cortos, que son los que menos amarran
+    y los que mas abundan. Cancelar es simetrico: la union es un par, y dejar el
+    diente de un lado sin la ranura del otro es peor que no ponerla.
+
+    El contacto cancelado se queda SIN 'modo', asi que `recortar_choques` lo vuelve
+    a mirar y recorta el traslape. Esa junta se pega, no se ensambla.
+    """
+    canceladas = set()
+    por_placa = {}
+    for ic, c in enumerate(contactos):
+        if not c.get('modo'):
+            continue
+        for k in (c['espiga'], c['ranura']):
+            por_placa.setdefault(k, []).append(ic)
+
+    for i, p in enumerate(placas):
+        pendientes = [ic for ic in por_placa.get(i, []) if ic not in canceladas]
+        if not pendientes:
+            continue
+        base = p['poly']
+        if base.is_empty or base.area <= 0:
+            continue
+        area = _figura(base, add[i], sub[i]).area
+        if area >= base.area * minimo:
+            continue
+        # de la que menos amarra a la que mas
+        pendientes.sort(key=lambda ic: contactos[ic]['largo'])
+        for ic in pendientes:
+            canceladas.add(ic)
+            for k in (contactos[ic]['espiga'], contactos[ic]['ranura']):
+                add[k] = [g for g in add[k] if del_contacto.get(id(g)) != ic]
+                sub[k] = [g for g in sub[k] if del_contacto.get(id(g)) != ic]
+            if _figura(base, add[i], sub[i]).area >= base.area * minimo:
+                break
+
+    for ic in canceladas:
+        contactos[ic]['modo'] = None
+        contactos[ic]['cancelada'] = True
+        contactos[ic]['dientes'] = 0
+    return canceladas
 
 
 def _solo_poligonos(g, min_area=1e-9):

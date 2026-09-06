@@ -53,6 +53,21 @@ for h_i, colocadas in enumerate(hojas):
             print('FUERA DE HOJA  h%d %s  bounds=%s'
                   % (h_i + 1, pid, [round(v, 1) for v in g.bounds]))
             fallas += 1
+    # el grabado tiene que caer sobre material: si la huella se sale de su pieza,
+    # el laser marca la cama; si se sale de la hoja, marca la mesa
+    for c in colocadas:
+        gu = c.get('guia')
+        if gu is None or gu.is_empty:
+            continue
+        pid = c['pieza']['id']
+        if not marco.contains(gu):
+            print('GRABADO FUERA DE HOJA  h%d %s' % (h_i + 1, pid))
+            fallas += 1
+        elif not c['geo'].buffer(1e-6).contains(gu):
+            print('GRABADO FUERA DE PIEZA h%d %s  sobra %.1f mm2'
+                  % (h_i + 1, pid, gu.difference(c['geo']).area))
+            fallas += 1
+
     # el par a par es O(n^2) y una hoja real trae cientos de piezas
     arbol = STRtree([g for _, g in geos])
     for i, (pid, g) in enumerate(geos):
