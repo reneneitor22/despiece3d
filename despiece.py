@@ -41,6 +41,40 @@ class Config:
         return base / self.escala
 
 
+def cargar_modelo(ruta):
+    """Abre el modelo diciendo QUE paso cuando no se puede.
+
+    Un alumno baja lo que sea: la pagina de error del sitio guardada con
+    extension .glb, un .zip sin descomprimir, un STL a medio bajar. Lo que no
+    puede es toparse con un traceback de trimesh.
+    """
+    import os
+    import trimesh
+
+    if not os.path.exists(ruta):
+        raise SystemExit('no existe el archivo: %s' % ruta)
+    if os.path.getsize(ruta) < 64:
+        raise SystemExit('el archivo esta vacio o se bajo a medias: %s' % ruta)
+
+    cabeza = open(ruta, 'rb').read(400).lstrip()
+    if cabeza[:1] == b'<' or b'<!DOCTYPE html' in cabeza or b'<html' in cabeza:
+        raise SystemExit('esto no es un modelo 3D, es una pagina web guardada con '
+                         'nombre de modelo. Vuelve a bajarlo desde el boton de '
+                         'descarga del sitio: %s' % ruta)
+    if cabeza[:2] == b'PK':
+        raise SystemExit('esto es un ZIP. Descomprimelo y pasa el modelo de adentro: %s'
+                         % ruta)
+
+    try:
+        m = trimesh.load(ruta, force='mesh')
+    except Exception as e:
+        raise SystemExit('no se pudo leer %s (%s). Formatos que si lee: '
+                         'STL, OBJ, PLY, GLB, DAE.' % (ruta, e))
+    if m is None or m.is_empty or len(m.faces) == 0:
+        raise SystemExit('el archivo se leyo pero no trae geometria: %s' % ruta)
+    return m
+
+
 # ------------------------------------------------------------- solidificar
 def _loops_de_frontera(mesh):
     """Devuelve listas de indices de vertice que forman los bordes abiertos."""
@@ -157,7 +191,7 @@ def rebanar(mesh, cfg, min_area_mm2=4.0):
     except Exception:
         secciones = None
 
-    capas = []
+    capas, capas_malas = [], []
     for i in range(n_capas):
         z = z0 + alturas[i]
         plano = None
@@ -172,8 +206,23 @@ def rebanar(mesh, cfg, min_area_mm2=4.0):
         if plano is None:
             continue
 
+        # Con una malla sucia, la rebanada sale como contorno que se cruza a si
+        # mismo y trimesh se rinde ("unable to recover polygon"). Antes eso
+        # tumbaba TODO el despiece por una sola capa mala. Se intenta el camino
+        # de repuesto y, si tampoco, se pierde esa capa y se avisa.
+        try:
+            anillos = plano.polygons_full
+        except Exception:
+            try:
+                anillos = [g.buffer(0) for g in plano.polygons_closed if g is not None]
+            except Exception:
+                anillos = []
+            capas_malas.append(i + 1)
+
         polys = []
-        for p in plano.polygons_full:
+        for p in anillos:
+            if p is None or p.is_empty:
+                continue
             polys.extend(_limpiar(p, min_area_mm2 / (cfg.a_mm ** 2)))
         if not polys:
             continue
@@ -194,6 +243,10 @@ def rebanar(mesh, cfg, min_area_mm2=4.0):
             'z_real': (z - z0),
             'polys': polys_mm,
         })
+    if capas_malas:
+        print('  OJO: la malla esta sucia en %d capa(s) (%s...): el contorno se cruza '
+              'a si mismo y se reconstruyo como se pudo'
+              % (len(capas_malas), ', '.join(str(x) for x in capas_malas[:5])))
     return capas
 
 

@@ -2,15 +2,14 @@
 """CLI: python3 cortar.py modelo.stl --escala 200 --espesor 3 --hoja 500x700"""
 import argparse, os, sys, time
 import trimesh
-from despiece import Config, solidificar, rebanar, armar_piezas, acomodar, partir_grandes
+from despiece import (Config, solidificar, rebanar, armar_piezas, acomodar,
+                      partir_grandes, cargar_modelo)
 import exportar
 
 
 def correr(ruta, cfg, salida, nombre=None):
     t0 = time.time()
-    m = trimesh.load(ruta, force='mesh')
-    if m.is_empty:
-        sys.exit('modelo vacio o formato no leido: ' + ruta)
+    m = cargar_modelo(ruta)
     ext = m.extents
     print('modelo: %.1f x %.1f x %.1f %s | %d caras | watertight=%s'
           % (ext[0], ext[1], ext[2], cfg.unidades_modelo, len(m.faces), m.is_watertight))

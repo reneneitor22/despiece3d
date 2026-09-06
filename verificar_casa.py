@@ -11,7 +11,7 @@ import trimesh
 import shapely
 from shapely.geometry import Polygon
 
-from despiece import Config
+from despiece import Config, cargar_modelo
 from placas import extraer_placas, nombrar
 from uniones import detectar_contactos, aplicar_uniones, recortar_choques
 from estructura import _cortable, MAX_PLACAS
@@ -20,7 +20,7 @@ from estructura import _cortable, MAX_PLACAS
 def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm=0.05,
            tope_voxeles=25e6):
     cfg = Config(escala, carton_mm, 0.0, (600, 900), unidades_modelo=unidades)
-    m = trimesh.load(ruta, force='mesh')
+    m = cargar_modelo(ruta)
     placas, _ = extraer_placas(m)
     # el mismo filtro que aplica el despiece: si una placa no se corta a esta
     # escala, tampoco tiene por que aparecer en la prueba de ensamble

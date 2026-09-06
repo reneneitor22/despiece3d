@@ -13,7 +13,7 @@ from shapely.geometry import box
 from shapely.strtree import STRtree
 
 from despiece import (Config, solidificar, rebanar, armar_piezas, acomodar,
-                      partir_grandes)
+                      partir_grandes, cargar_modelo)
 
 ap = argparse.ArgumentParser()
 ap.add_argument('modelo', nargs='?', default='out/terreno_prueba.stl')
@@ -31,9 +31,7 @@ w, h = [float(v) for v in a.hoja.lower().split('x')]
 cfg = Config(a.escala, a.espesor, a.kerf, (w, h), unidades_modelo=a.unidades,
              vaciar=not a.solido)
 
-m = trimesh.load(a.modelo, force='mesh')
-if m.is_empty:
-    sys.exit('modelo vacio o formato no leido: ' + a.modelo)
+m = cargar_modelo(a.modelo)
 if not m.is_watertight:
     m = solidificar(m)
 capas = rebanar(m, cfg)

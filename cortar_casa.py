@@ -2,7 +2,7 @@
 """CLI del modo estructural: modelo 3D -> muros, losas y techos cortables."""
 import argparse, os, sys, time
 import trimesh
-from despiece import Config, acomodar, partir_grandes, ROTACIONES_ORTO
+from despiece import Config, acomodar, partir_grandes, cargar_modelo, ROTACIONES_ORTO
 from estructura import despiece_estructural
 from isometrica import vista
 import exportar
@@ -21,7 +21,7 @@ w, h = [float(v) for v in a.hoja.lower().split('x')]
 cfg = Config(a.escala, a.espesor, a.kerf, (w, h), unidades_modelo=a.unidades)
 
 t0 = time.time()
-m = trimesh.load(a.modelo, force='mesh')
+m = cargar_modelo(a.modelo)
 piezas, info = despiece_estructural(m, cfg, con_uniones=not a.sin_uniones)
 if 'error' in info:
     sys.exit(info['error'])
