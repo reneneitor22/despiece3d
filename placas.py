@@ -8,7 +8,7 @@ import warnings
 
 import numpy as np
 import trimesh
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, Point as ShapelyPoint
 from shapely.ops import unary_union
 
 # los cuerpos degenerados de un modelo real (astillas, caras dobles) hacen que
@@ -468,6 +468,68 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
         descartados.append((-1, '%d placas se fundieron con otra por estar mas juntas '
                                 'que el carton' % fundidas))
     return placas, descartados
+
+
+def _puntos_de_muestra(poly, n=6):
+    """Unos cuantos puntos repartidos DENTRO del poligono (no en el borde)."""
+    pts = [poly.representative_point()]
+    minx, miny, maxx, maxy = poly.bounds
+    for fx in (0.25, 0.5, 0.75):
+        for fy in (0.33, 0.66):
+            p = ShapelyPoint(minx + fx * (maxx - minx), miny + fy * (maxy - miny))
+            if poly.contains(p):
+                pts.append(p)
+            if len(pts) >= n:
+                return pts
+    return pts
+
+
+def marcar_envolvente(placas, mesh, holgura=None):
+    """Marca cada placa como de fuera o de dentro tirando un rayo hacia afuera.
+
+    Un alumno que baja un edificio de cinco pisos casi nunca quiere las losas de
+    entrepiso ni los muros interiores: quiere la caja. Desde varios puntos de la
+    placa se tira un rayo en direccion de su normal, para los dos lados. Si por
+    algun lado el rayo se va sin chocar con nada, esa cara mira a la calle.
+
+    Funciona igual para muros (normal horizontal: el muro interior choca contra el
+    de fachada) que para losas (normal vertical: el entrepiso choca contra el
+    techo, el techo no choca con nada).
+    """
+    if not placas or mesh is None or len(mesh.faces) == 0:
+        return 0
+    if holgura is None:
+        holgura = float(np.max(mesh.extents)) * 1e-3
+
+    origenes, direcciones, dueno = [], [], []
+    for k, p in enumerate(placas):
+        n = np.asarray(p['normal'], dtype=float)
+        n = n / np.linalg.norm(n)
+        for sp in _puntos_de_muestra(p['poly']):
+            L = np.array([sp.x, sp.y, 0.0, 1.0])
+            w = (p['a_mundo'] @ L)[:3]
+            for signo in (1.0, -1.0):
+                origenes.append(w + n * signo * holgura)
+                direcciones.append(n * signo)
+                dueno.append(k)
+    if not origenes:
+        return 0
+
+    try:
+        pega = mesh.ray.intersects_any(ray_origins=np.array(origenes),
+                                       ray_directions=np.array(direcciones))
+    except Exception:
+        for p in placas:
+            p['exterior'] = True
+        return len(placas)
+
+    dueno = np.asarray(dueno)
+    libre = ~np.asarray(pega)
+    n_ext = 0
+    for k, p in enumerate(placas):
+        p['exterior'] = bool(libre[dueno == k].any())
+        n_ext += 1 if p['exterior'] else 0
+    return n_ext
 
 
 def nombrar(placas):

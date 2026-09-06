@@ -5,7 +5,7 @@ import trimesh
 from shapely.geometry import Polygon, MultiPolygon
 import shapely.affinity as aff
 
-from placas import extraer_placas, nombrar
+from placas import extraer_placas, nombrar, marcar_envolvente
 from uniones import detectar_contactos, aplicar_uniones, recortar_choques
 
 DIENTE_OBJ_MM = 12.0      # ancho buscado del diente, en mm de maqueta
@@ -25,7 +25,7 @@ def _cortable(placa, cfg):
     return lado >= MIN_LADO_MM and g.area * cfg.a_mm * cfg.a_mm >= MIN_AREA_MM2
 
 
-def despiece_estructural(mesh, cfg, con_uniones=True):
+def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False):
     """Devuelve (piezas_mm, info). Las piezas traen 'poly' en mm de maqueta."""
     # el espesor del carton llevado a unidades del modelo: lo necesita el camino
     # de superficies para saber que dos caras ya no caben separadas
@@ -37,6 +37,14 @@ def despiece_estructural(mesh, cfg, con_uniones=True):
     antes = len(placas)
     placas = [p for p in placas if _cortable(p, cfg)]
     incortables = antes - len(placas)
+
+    # Un edificio de cinco pisos trae losas de entrepiso y muros interiores que
+    # el alumno casi nunca quiere: pidiendo solo la envolvente se queda la caja.
+    n_dentro = 0
+    if solo_envolvente and placas:
+        marcar_envolvente(placas, mesh)
+        n_dentro = sum(1 for p in placas if not p.get('exterior'))
+        placas = [p for p in placas if p.get('exterior')]
 
     # Un distrito urbano entero da miles de placas. No es un error del modelo:
     # es que no cabe en una maqueta escolar. Se cortan las grandes y se dice
@@ -58,6 +66,9 @@ def despiece_estructural(mesh, cfg, con_uniones=True):
     contactos, n_uniones = [], 0
     n_recortes, avisos_recorte = 0, []
     avisos_previos = []
+    if n_dentro:
+        avisos_previos.append('%d placas eran de adentro (entrepisos y muros '
+                              'interiores) y se dejaron fuera' % n_dentro)
     if incortables:
         avisos_previos.append('%d placas quedan mas chicas que %.0f mm a 1:%d y no se '
                               'pueden cortar: no van en las hojas'

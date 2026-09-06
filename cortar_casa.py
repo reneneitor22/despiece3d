@@ -16,13 +16,16 @@ ap.add_argument('--hoja', default='600x900')
 ap.add_argument('--unidades', default='m')
 ap.add_argument('--salida', default='out_casa')
 ap.add_argument('--sin-uniones', action='store_true')
+ap.add_argument('--solo-envolvente', action='store_true',
+                help='solo la caja de afuera: sin entrepisos ni muros interiores')
 a = ap.parse_args()
 w, h = [float(v) for v in a.hoja.lower().split('x')]
 cfg = Config(a.escala, a.espesor, a.kerf, (w, h), unidades_modelo=a.unidades)
 
 t0 = time.time()
 m = cargar_modelo(a.modelo)
-piezas, info = despiece_estructural(m, cfg, con_uniones=not a.sin_uniones)
+piezas, info = despiece_estructural(m, cfg, con_uniones=not a.sin_uniones,
+                                    solo_envolvente=a.solo_envolvente)
 if 'error' in info:
     sys.exit(info['error'])
 
