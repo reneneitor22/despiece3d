@@ -149,129 +149,95 @@ def _rect(q, u, perp, ta, tb, wa, wb):
                     q + u * tb + perp * wb, q + u * ta + perp * wb])
 
 
-def aplicar_uniones(placas, contactos, t_placa_modelo, diente_obj, holgura_modelo):
-    """Dos tipos de union, elegidos por geometria:
+def _tejer(placas, c, i_ranura, i_espiga, t, diente_obj, holgura_modelo):
+    """Calcula la union de UN contacto con unos papeles dados, sin tocar nada.
 
-    RANURA  la placa que topa cae en medio de la receptora -> ranura pasada + espiga.
-    DEDOS   se encuentran canto con canto (esquinas, muro parado en el filo de la losa)
-            -> dientes alternados: donde una sale, la otra se mete.
+    Devuelve (modo, dientes, aportes, marcas) donde aportes es una lista de
+    ('add'|'sub', indice_de_placa, poligono). Se calcula aparte justamente para
+    poder pedirla otra vez con los papeles al reves: la placa que recibe las
+    ranuras es la que pierde area, y a veces conviene que las reciba la otra.
     """
-    # cada trozo se guarda con el contacto del que salio: si luego hay que
-    # cancelar una union, se quita de LAS DOS placas del par
-    add = {i: [] for i in range(len(placas))}
-    sub = {i: [] for i in range(len(placas))}
-    marcas = {i: [] for i in range(len(placas))}
-    del_contacto = {}                       # id(trozo) -> indice del contacto
-    t = t_placa_modelo
+    pe, pr = placas[i_espiga], placas[i_ranura]
+    re_, rr_ = _recta_local(pe, c['p0'], c['d']), _recta_local(pr, c['p0'], c['d'])
+    if re_ is None or rr_ is None:
+        return None
+    qe, ue = re_
+    qr, ur = rr_
+    perp_e = _perp_hacia(pe, qe, np.array([-ue[1], ue[0]]), qr)
+    perp_r = _perp_hacia(pr, qr, np.array([-ur[1], ur[0]]), qe)
+
+    w_e = _w_borde(pe['poly'], qe, ue, perp_e, c['t0'], c['t1'])
+    w_r = _w_borde(pr['poly'], qr, ur, perp_r, c['t0'], c['t1'])
+    if w_e is None or w_r is None:
+        return None
+
     LEJOS = t * 40 + 1.0
-    hechas = 0
+    # a un angulo distinto de 90 grados hay que avanzar mas para salir del canto:
+    # la distancia en el plano es (t/2) / sen(angulo entre placas)
+    cosang = abs(float(np.dot(pe['normal'], pr['normal'])))
+    sen = max(float(np.sqrt(max(1.0 - cosang * cosang, 0.0))), 0.30)
+    # OJO: la placa no es una superficie, es una losa de espesor t. El material
+    # que esta fuera del plano medio alcanza mas lejos, por eso el (1+cos).
+    tt = t * (1.0 + cosang) / sen
 
-    for ic, c in enumerate(contactos):
-        pe, pr = placas[c['espiga']], placas[c['ranura']]
-        re_, rr_ = _recta_local(pe, c['p0'], c['d']), _recta_local(pr, c['p0'], c['d'])
-        if re_ is None or rr_ is None:
-            continue
-        qe, ue = re_
-        qr, ur = rr_
-        perp_e = _perp_hacia(pe, qe, np.array([-ue[1], ue[0]]), qr)
-        perp_r = _perp_hacia(pr, qr, np.array([-ur[1], ur[0]]), qe)
+    n = max(3, min(11, int(round(c['largo'] / max(diente_obj, 1e-6)))))
+    if n % 2 == 0:
+        n += 1
+    paso = (c['t1'] - c['t0']) / n
 
-        w_e = _w_borde(pe['poly'], qe, ue, perp_e, c['t0'], c['t1'])
-        w_r = _w_borde(pr['poly'], qr, ur, perp_r, c['t0'], c['t1'])
-        if w_e is None or w_r is None:
-            continue
+    marcas = [(i_ranura, _rect(qr, ur, perp_r, c['t0'], c['t1'], -tt / 2, tt / 2)),
+              (i_espiga, _rect(qe, ue, perp_e, c['t0'], c['t1'], -tt / 2, tt / 2))]
 
-        # a un angulo distinto de 90 grados hay que avanzar mas para salir del canto:
-        # la distancia en el plano es (t/2) / sen(angulo entre placas)
-        cosang = abs(float(np.dot(pe['normal'], pr['normal'])))
-        sen = max(float(np.sqrt(max(1.0 - cosang * cosang, 0.0))), 0.30)
-        # OJO: la placa no es una superficie, es una losa de espesor t. El material
-        # que esta fuera del plano medio alcanza mas lejos, por eso el (1+cos).
-        # A 90 grados da t, igual que antes; en una pendiente da bastante mas.
-        tt = t * (1.0 + cosang) / sen
+    # ¿la ranura cabe entera dentro de la receptora?
+    h = tt / 2.0 + holgura_modelo
+    ranuras = [_rect(qr, ur, perp_r, c['t0'] + k * paso - holgura_modelo,
+                     c['t0'] + (k + 1) * paso + holgura_modelo, -h, h)
+               for k in range(0, n, 2)]
+    cabe = all(pr['poly'].buffer(1e-9).contains(r) for r in ranuras)
 
-        n = max(3, min(11, int(round(c['largo'] / max(diente_obj, 1e-6)))))
-        if n % 2 == 0:
-            n += 1
-        paso = (c['t1'] - c['t0']) / n
+    def crecer(placa, q, u, perp, ta, tb, obj):
+        """Alarga la placa hasta `obj` SOLO en esta franja, arrancando del
+        borde que tiene ahi. Sin esto el diente se desborda en las esquinas."""
+        franja = _rect(q, u, perp, ta, tb, -LEJOS, LEJOS)
+        dentro = placa['poly'].intersection(franja)
+        if dentro.is_empty or dentro.area <= 0:
+            return None
+        w_max = _w_borde_geom(dentro, q, u, perp)
+        if w_max is None or obj <= w_max + 1e-9:
+            return None
+        return _rect(q, u, perp, ta, tb, w_max - tt * 0.25, obj)
 
-        def anota(cubeta, placa_i, geo):
-            cubeta[placa_i].append(geo)
-            del_contacto[id(geo)] = ic
-            return geo
-
-        marcas[c['ranura']].append(_rect(qr, ur, perp_r, c['t0'], c['t1'], -tt / 2, tt / 2))
-        marcas[c['espiga']].append(_rect(qe, ue, perp_e, c['t0'], c['t1'], -tt / 2, tt / 2))
-        del_contacto[id(marcas[c['ranura']][-1])] = ic
-        del_contacto[id(marcas[c['espiga']][-1])] = ic
-
-        # ¿la ranura cabe entera dentro de la receptora?
-        h = tt / 2.0 + holgura_modelo
-        ranuras = [_rect(qr, ur, perp_r, c['t0'] + k * paso - holgura_modelo,
-                         c['t0'] + (k + 1) * paso + holgura_modelo, -h, h)
-                   for k in range(0, n, 2)]
-        cabe = all(pr['poly'].buffer(1e-9).contains(r) for r in ranuras)
-
-        def crecer(placa, q, u, perp, ta, tb, obj):
-            """Alarga la placa hasta `obj` SOLO en esta franja, arrancando del
-            borde que tiene ahi. Sin esto el diente se desborda en las esquinas."""
-            franja = _rect(q, u, perp, ta, tb, -LEJOS, LEJOS)
-            dentro = placa['poly'].intersection(franja)
-            if dentro.is_empty or dentro.area <= 0:
-                return None
-            w_max = _w_borde_geom(dentro, q, u, perp)
-            if w_max is None or obj <= w_max + 1e-9:
-                return None
-            return _rect(q, u, perp, ta, tb, w_max - tt * 0.25, obj)
-
-        if cabe:
-            c['modo'] = 'ranura'
-            for k in range(n):
-                ta, tb = c['t0'] + k * paso, c['t0'] + (k + 1) * paso
-                if k % 2 == 0:
-                    g = crecer(pe, qe, ue, perp_e, ta, tb, max(tt / 2, w_e))
-                    if g is not None:
-                        anota(add, c['espiga'], g)
+    aportes = []
+    if cabe:
+        modo = 'ranura'
+        for k in range(n):
+            ta, tb = c['t0'] + k * paso, c['t0'] + (k + 1) * paso
+            if k % 2 == 0:
+                g = crecer(pe, qe, ue, perp_e, ta, tb, max(tt / 2, w_e))
+                if g is not None:
+                    aportes.append(('add', i_espiga, g))
+            else:
+                aportes.append(('sub', i_espiga,
+                                _rect(qe, ue, perp_e, ta, tb, -tt / 2, LEJOS)))
+        for r in ranuras:
+            aportes.append(('sub', i_ranura, r))
+    else:
+        modo = 'dedos'
+        for k in range(n):
+            ta, tb = c['t0'] + k * paso, c['t0'] + (k + 1) * paso
+            # par: sale la que topa y se mete la receptora; impar: al reves
+            obj_e = (tt / 2) if k % 2 == 0 else (-tt / 2)
+            obj_r = (-tt / 2) if k % 2 == 0 else (tt / 2)
+            for placa, placa_i, q, u, perp, obj in (
+                    (pe, i_espiga, qe, ue, perp_e, obj_e),
+                    (pr, i_ranura, qr, ur, perp_r, obj_r)):
+                g = crecer(placa, q, u, perp, ta, tb, obj)
+                if g is not None:
+                    aportes.append(('add', placa_i, g))
                 else:
-                    anota(sub, c['espiga'], _rect(qe, ue, perp_e, ta, tb, -tt / 2, LEJOS))
-            for r in ranuras:
-                anota(sub, c['ranura'], r)
-        else:
-            c['modo'] = 'dedos'
-            for k in range(n):
-                ta, tb = c['t0'] + k * paso, c['t0'] + (k + 1) * paso
-                # par: sale la que topa y se mete la receptora; impar: al reves
-                obj_e = (tt / 2) if k % 2 == 0 else (-tt / 2)
-                obj_r = (-tt / 2) if k % 2 == 0 else (tt / 2)
-                for placa, placa_i, q, u, perp, obj in (
-                        (pe, c['espiga'], qe, ue, perp_e, obj_e),
-                        (pr, c['ranura'], qr, ur, perp_r, obj_r)):
-                    g = crecer(placa, q, u, perp, ta, tb, obj)
-                    if g is not None:
-                        anota(add, placa_i, g)
-                    else:
-                        anota(sub, placa_i, _rect(q, u, perp, ta, tb, obj, LEJOS))
-        c['dientes'] = (n + 1) // 2
-        hechas += 1
-
-    canceladas = _cuidar_placas(placas, contactos, add, sub, del_contacto)
-
-    for i, p in enumerate(placas):
-        g = p['poly']
-        p['poly_original'] = g
-        if add[i]:
-            g = unary_union([g] + add[i]).buffer(0)
-        if sub[i]:
-            g = g.difference(unary_union(sub[i]).buffer(0))
-        if g.geom_type == 'MultiPolygon':
-            g = max(g.geoms, key=lambda x: x.area)
-        p['poly'] = g
-        p['n_dientes'] = len(add[i])
-        p['n_ranuras'] = len(sub[i])
-        vivas = [m for m in marcas[i] if del_contacto.get(id(m)) not in canceladas]
-        m = unary_union(vivas).intersection(g) if vivas else None
-        p['marcas'] = _solo_poligonos(m)
-    return hechas - len(canceladas)
+                    aportes.append(('sub', placa_i,
+                                    _rect(q, u, perp, ta, tb, obj, LEJOS)))
+    return modo, (n + 1) // 2, aportes, marcas
 
 
 def _figura(base, mas, menos):
@@ -285,52 +251,156 @@ def _figura(base, mas, menos):
     return g
 
 
-def _cuidar_placas(placas, contactos, add, sub, del_contacto, minimo=MINIMO_AREA):
-    """Una union por cada placa que llega esta bien en una casita de nueve piezas.
-    En un edificio real un muro medianero recibe CIENTO CINCUENTA Y CUATRO ranuras
-    y queda hecho encaje de bolillo: 208 m2 de muro terminan en 12.
-
-    Aqui se cancelan uniones hasta que cada placa conserve al menos `minimo` de su
-    area. Se tumban primero los contactos mas cortos, que son los que menos amarran
-    y los que mas abundan. Cancelar es simetrico: la union es un par, y dejar el
-    diente de un lado sin la ranura del otro es peor que no ponerla.
-
-    El contacto cancelado se queda SIN 'modo', asi que `recortar_choques` lo vuelve
-    a mirar y recorta el traslape. Esa junta se pega, no se ensambla.
-    """
-    canceladas = set()
-    por_placa = {}
-    for ic, c in enumerate(contactos):
-        if not c.get('modo'):
+def _area_con(placas, i, tejidos, saltar=None):
+    """Area que le queda a la placa i con las uniones vivas."""
+    mas, menos = [], []
+    for ic, tej in tejidos.items():
+        if tej is None or ic == saltar:
             continue
-        for k in (c['espiga'], c['ranura']):
+        for cual, pi, g in tej['aportes']:
+            if pi != i:
+                continue
+            (mas if cual == 'add' else menos).append(g)
+    return _figura(placas[i]['poly'], mas, menos).area
+
+
+def _repartir_uniones(placas, contactos, tejidos, t, diente_obj, holgura_modelo,
+                      minimo=MINIMO_AREA):
+    """Que ninguna placa se destruya a si misma, sin perder la union si se puede.
+
+    En un edificio real un muro medianero recibe las ranuras de TODOS los
+    entrepisos y particiones que llegan: 154 ranuras y el muro queda hecho encaje
+    de bolillo (208 m2 terminan en 12).
+
+    Antes se cancelaba la union y esa junta se pegaba a tope, lo que deja el
+    traslape sin resolver. Ahora primero se intenta VOLTEAR LOS PAPELES: la
+    ranura la recibe la otra placa del par. El muro se salva y la union sigue de
+    pie. Solo si voltear tampoco alcanza (o hunde a la otra) se cancela.
+
+    Voltear se prueba empezando por el contacto que mas area le cuesta a la placa,
+    que es el que mas rinde. Cancelar se hace al reves: primero los contactos mas
+    cortos, que son los que menos amarran.
+    """
+    volteadas, canceladas = set(), set()
+
+    por_placa = {}
+    for ic, tej in tejidos.items():
+        if tej is None:
+            continue
+        for k in (contactos[ic]['espiga'], contactos[ic]['ranura']):
             por_placa.setdefault(k, []).append(ic)
 
     for i, p in enumerate(placas):
-        pendientes = [ic for ic in por_placa.get(i, []) if ic not in canceladas]
-        if not pendientes:
+        mios = [ic for ic in por_placa.get(i, [])
+                if ic not in canceladas and tejidos.get(ic)]
+        if not mios or p['poly'].is_empty or p['poly'].area <= 0:
             continue
-        base = p['poly']
-        if base.is_empty or base.area <= 0:
+        meta = p['poly'].area * minimo
+        if _area_con(placas, i, tejidos) >= meta:
             continue
-        area = _figura(base, add[i], sub[i]).area
-        if area >= base.area * minimo:
-            continue
-        # de la que menos amarra a la que mas
-        pendientes.sort(key=lambda ic: contactos[ic]['largo'])
-        for ic in pendientes:
-            canceladas.add(ic)
-            for k in (contactos[ic]['espiga'], contactos[ic]['ranura']):
-                add[k] = [g for g in add[k] if del_contacto.get(id(g)) != ic]
-                sub[k] = [g for g in sub[k] if del_contacto.get(id(g)) != ic]
-            if _figura(base, add[i], sub[i]).area >= base.area * minimo:
-                break
 
-    for ic in canceladas:
-        contactos[ic]['modo'] = None
-        contactos[ic]['cancelada'] = True
-        contactos[ic]['dientes'] = 0
-    return canceladas
+        # cuanto le quita cada contacto a ESTA placa
+        def costo(ic):
+            q = [g for cual, pi, g in tejidos[ic]['aportes']
+                 if pi == i and cual == 'sub']
+            return sum(g.area for g in q)
+
+        for ic in sorted(mios, key=costo, reverse=True):
+            if _area_con(placas, i, tejidos) >= meta:
+                break
+            c = contactos[ic]
+            if ic in volteadas:
+                continue
+            otro = c['espiga'] if c['ranura'] == i else c['ranura']
+            # los papeles al reves: la ranura la recibe la otra placa
+            nuevo = _tejer(placas, c, i_ranura=c['espiga'], i_espiga=c['ranura'],
+                           t=t, diente_obj=diente_obj, holgura_modelo=holgura_modelo)
+            if nuevo is None:
+                continue
+            antes_yo = _area_con(placas, i, tejidos)
+            antes_otro = _area_con(placas, otro, tejidos)
+            guardado = tejidos[ic]
+            tejidos[ic] = {'modo': nuevo[0], 'dientes': nuevo[1],
+                           'aportes': nuevo[2], 'marcas': nuevo[3],
+                           'ranura': c['espiga'], 'espiga': c['ranura']}
+            ahora_yo = _area_con(placas, i, tejidos)
+            ahora_otro = _area_con(placas, otro, tejidos)
+            meta_otro = placas[otro]['poly'].area * minimo
+            # se acepta si a mi me ayuda y al otro no lo hunde
+            if ahora_yo > antes_yo and (ahora_otro >= meta_otro
+                                        or ahora_otro >= antes_otro):
+                volteadas.add(ic)
+            else:
+                tejidos[ic] = guardado
+
+        # lo que voltear no alcanzo a salvar, se cancela: primero los contactos
+        # mas cortos, que son los que menos amarran
+        if _area_con(placas, i, tejidos) < meta:
+            for ic in sorted(mios, key=lambda k: contactos[k]['largo']):
+                if ic in canceladas:
+                    continue
+                canceladas.add(ic)
+                tejidos[ic] = None
+                if _area_con(placas, i, tejidos) >= meta:
+                    break
+
+    return volteadas, canceladas
+
+
+def aplicar_uniones(placas, contactos, t_placa_modelo, diente_obj, holgura_modelo):
+    """Dos tipos de union, elegidos por geometria:
+
+    RANURA  la placa que topa cae en medio de la receptora -> ranura pasada + espiga.
+    DEDOS   se encuentran canto con canto (esquinas, muro parado en el filo de la losa)
+            -> dientes alternados: donde una sale, la otra se mete.
+
+    Se calcula cada contacto por separado, se reparte la carga entre las placas y
+    hasta el final se aplica: una placa que recibe todas las ranuras se destruye.
+    """
+    t = t_placa_modelo
+    tejidos = {}
+    for ic, c in enumerate(contactos):
+        r = _tejer(placas, c, c['ranura'], c['espiga'], t, diente_obj, holgura_modelo)
+        if r is None:
+            tejidos[ic] = None
+            continue
+        tejidos[ic] = {'modo': r[0], 'dientes': r[1], 'aportes': r[2], 'marcas': r[3],
+                       'ranura': c['ranura'], 'espiga': c['espiga']}
+
+    volteadas, canceladas = _repartir_uniones(placas, contactos, tejidos, t,
+                                              diente_obj, holgura_modelo)
+
+    add = {i: [] for i in range(len(placas))}
+    sub = {i: [] for i in range(len(placas))}
+    marcas = {i: [] for i in range(len(placas))}
+    hechas = 0
+    for ic, c in enumerate(contactos):
+        tej = tejidos.get(ic)
+        if tej is None:
+            c['modo'] = None
+            c['dientes'] = 0
+            c['cancelada'] = ic in canceladas
+            continue
+        c['modo'] = tej['modo']
+        c['dientes'] = tej['dientes']
+        c['volteada'] = ic in volteadas
+        c['ranura'], c['espiga'] = tej['ranura'], tej['espiga']
+        for cual, pi, g in tej['aportes']:
+            (add if cual == 'add' else sub)[pi].append(g)
+        for pi, g in tej['marcas']:
+            marcas[pi].append(g)
+        hechas += 1
+
+    for i, p in enumerate(placas):
+        g = p['poly']
+        p['poly_original'] = g
+        g = _figura(g, add[i], sub[i])
+        p['poly'] = g
+        p['n_dientes'] = len(add[i])
+        p['n_ranuras'] = len(sub[i])
+        m = unary_union(marcas[i]).intersection(g) if marcas[i] else None
+        p['marcas'] = _solo_poligonos(m)
+    return hechas
 
 
 def _solo_poligonos(g, min_area=1e-9):
