@@ -280,6 +280,116 @@ def _placas_de_superficies(mesh, min_area, muro_max=MURO_MAX, t_modelo=0.0):
     return placas, nota
 
 
+def _proyectar_a_marco(placa, F):
+    """La silueta de la placa vista en el marco F (2D)."""
+    inv = np.linalg.inv(F)
+    salida = []
+    for anillo in [placa['poly'].exterior] + list(placa['poly'].interiors):
+        pts = np.array(anillo.coords)
+        L3 = np.hstack([pts, np.zeros((len(pts), 1)), np.ones((len(pts), 1))])
+        W = (placa['a_mundo'] @ L3.T).T[:, :3]
+        salida.append((inv @ np.hstack([W, np.ones((len(W), 1))]).T).T[:, :2])
+    g = Polygon(salida[0], salida[1:])
+    return g if g.is_valid else g.buffer(0)
+
+
+def fundir_pegadas(placas, t_modelo, min_encime=0.05):
+    """Dos placas paralelas mas juntas que el propio carton son UNA placa.
+
+    Pasa en los dos caminos. En un STL de verdad la losa viene como dos solidos
+    apilados (la estructural y su firme) y cada uno da su placa: en la maqueta son
+    dos cartones ocupando el mismo lugar. Main Street Place tenia asi el 1.9% de
+    su material, todo en choques losa contra losa.
+
+    Se funden sobre el plano medio del conjunto, con el espesor medido de la cara
+    de arriba a la de abajo.
+    """
+    if t_modelo <= 0 or len(placas) < 2:
+        return placas, 0
+
+    # normal con signo fijo y distancia al origen: dos placas paralelas comparten
+    # normal aunque apunten al reves
+    datos = []
+    for p in placas:
+        n = np.array(p['normal'], dtype=float)
+        n = n / np.linalg.norm(n)
+        dom = int(np.argmax(np.abs(n)))
+        if n[dom] < 0:
+            n = -n
+        datos.append((n, float(np.dot(n, np.asarray(p['centro'], dtype=float)))))
+
+    # Se decide agrupando de la placa mas grande a la mas chica (la grande manda),
+    # pero se ENTREGA en el orden original: detectar_contactos reparte los papeles
+    # de ranura y espiga segun el orden de la lista, y reordenarla cambia el
+    # despiece aunque no se funda nada.
+    tomadas, fundidas = set(), 0
+    hechas = {}
+    orden = sorted(range(len(placas)), key=lambda k: -placas[k]['area'])
+    for i in orden:
+        if i in tomadas:
+            continue
+        ni, di = datos[i]
+        F = _frame_desde_normal(ni, ni * di)
+        base = _proyectar_a_marco(placas[i], F)
+        grupo, ds = [i], [di]
+        for j in orden:
+            if j == i or j in tomadas:
+                continue
+            nj, dj = datos[j]
+            if float(np.dot(ni, nj)) < 1 - TOL_NORMAL:
+                continue
+            if min(abs(dj - d) for d in ds) >= t_modelo:
+                continue
+            otra = _proyectar_a_marco(placas[j], F)
+            try:
+                comun = base.intersection(otra).area
+            except Exception:
+                comun = 0.0
+            if comun <= min_encime * min(base.area, otra.area):
+                continue
+            grupo.append(j); ds.append(dj); tomadas.add(j)
+            try:
+                base = unary_union([base, otra]).buffer(COSTURA).buffer(-COSTURA)
+                if base.geom_type != 'Polygon':
+                    base = max(base.geoms, key=lambda g: g.area)
+            except Exception:
+                pass
+
+        if len(grupo) == 1:
+            hechas[i] = placas[i]
+            continue
+
+        fundidas += len(grupo) - 1
+        d_medio = (max(ds) + min(ds)) / 2.0
+        Fm = _frame_desde_normal(ni, ni * d_medio)
+        minx, miny, _, _ = base.bounds
+        g = Polygon([(x - minx, y - miny) for x, y in base.exterior.coords],
+                    [[(x - minx, y - miny) for x, y in r.coords] for r in base.interiors])
+        Fp = Fm.copy()
+        Fp[:3, 3] = Fm[:3, 3] + Fm[:3, 0] * minx + Fm[:3, 1] * miny
+        # el grupo ocupa el lugar de su placa mas temprana
+        hechas[min(grupo)] = {
+            'i': i,
+            'tipo': clasificar(ni),
+            'normal': ni,
+            'espesor_real': float(max(max(ds) - min(ds),
+                                      max(placas[k]['espesor_real'] for k in grupo))),
+            'poly': g,
+            'a_mundo': Fp,
+            'centro': np.asarray(Fp[:3, 3], dtype=float),
+            'area': float(g.area),
+            'z_min': float(min(placas[k]['z_min'] for k in grupo)),
+            'vanos': len(g.interiors),
+            'sintetica': any(placas[k].get('sintetica') for k in grupo),
+            'fundida_de': len(grupo),
+        }
+
+    salida = [hechas[k] for k in sorted(hechas)]
+    for k, p in enumerate(salida):
+        p['i'] = k
+    return salida, fundidas
+
+
 def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
                    t_modelo=0.0):
     """Devuelve (placas, descartados). Cada placa: normal, espesor real,
@@ -349,8 +459,14 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
             if motivo:
                 nota += ' (%s)' % motivo
             descartados.append((-1, nota))
-            return sup, descartados
+            placas = sup
 
+    # La regla vale para los DOS caminos: en un STL la losa viene como dos
+    # solidos apilados y cada uno da su placa.
+    placas, fundidas = fundir_pegadas(placas, t_modelo)
+    if fundidas:
+        descartados.append((-1, '%d placas se fundieron con otra por estar mas juntas '
+                                'que el carton' % fundidas))
     return placas, descartados
 
 
