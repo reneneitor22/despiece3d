@@ -4,10 +4,16 @@
 Idea central: cada cuerpo tipo lamina se corta por su PLANO MEDIO. Esa seccion es
 exactamente la pieza a cortar, con ventanas y puertas ya recortadas, sin booleanas.
 """
+import warnings
+
 import numpy as np
 import trimesh
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
+
+# los cuerpos degenerados de un modelo real (astillas, caras dobles) hacen que
+# trimesh divida entre cero al calcular su centro de masa: es esperado, se filtra
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='trimesh')
 
 # relacion espesor/ancho para considerar que un cuerpo es una placa
 RAZON_PLACA = 0.34
@@ -83,11 +89,14 @@ def _placas_de_superficies(mesh, min_area):
         n = n / np.linalg.norm(n)
         tri = m.faces[caras]
         vids = np.unique(tri)
-        centro = m.vertices[vids].mean(axis=0)
+        sub = np.full(m.vertices.shape[0], -1)
+        sub[vids] = np.arange(len(vids))
+        V = m.vertices[vids]
+        centro = V.mean(axis=0)
         F = _frame_desde_normal(n, centro)
         inv = np.linalg.inv(F)
-        P = (inv @ np.hstack([m.vertices, np.ones((len(m.vertices), 1))]).T).T[:, :3]
-        tris2d = [Polygon(P[t, :2]) for t in tri]
+        P = (inv @ np.hstack([V, np.ones((len(V), 1))]).T).T[:, :2]
+        tris2d = [Polygon(P[sub[t]]) for t in tri]
         try:
             poly = unary_union([g.buffer(0) for g in tris2d if g.is_valid and g.area > 1e-12])
         except Exception:

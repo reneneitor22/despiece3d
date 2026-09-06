@@ -15,6 +15,11 @@ HOLGURA_MM = 0.06         # juego de la ranura
 def despiece_estructural(mesh, cfg, con_uniones=True):
     """Devuelve (piezas_mm, info). Las piezas traen 'poly' en mm de maqueta."""
     placas, descartados = extraer_placas(mesh)
+    if len(placas) > 600:
+        return [], {'error': 'salieron %d placas: el modelo trae demasiado detalle '
+                             '(muebles, molduras, malla sucia). Exporta solo muros, '
+                             'losas y techos, o simplifica la malla.' % len(placas),
+                    'descartados': descartados}
     if not placas:
         return [], {'error': 'no se encontraron muros ni losas. '
                              '¿El modelo trae cuerpos con espesor?',

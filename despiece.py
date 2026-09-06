@@ -146,19 +146,30 @@ def rebanar(mesh, cfg, min_area_mm2=4.0):
     z0, z1 = float(mesh.bounds[0][2]), float(mesh.bounds[1][2])
     n_capas = max(1, int(math.floor((z1 - z0) / paso_modelo)))
 
+    alturas = [(i + 0.5) * paso_modelo for i in range(n_capas)]  # relativas a z0
+    # section_multiplane recorre el BVH una sola vez: ~10x mas rapido que
+    # llamar section() en un for con mallas de cientos de miles de caras.
+    secciones = None
+    try:
+        secciones = mesh.section_multiplane(plane_origin=[0, 0, z0],
+                                            plane_normal=[0, 0, 1],
+                                            heights=alturas)
+    except Exception:
+        secciones = None
+
     capas = []
     for i in range(n_capas):
-        # cortamos a la mitad de la lamina: la pieza representa esa franja
-        z = z0 + (i + 0.5) * paso_modelo
-        try:
-            sec = mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
-        except Exception:
-            sec = None
-        if sec is None:
-            continue
-        try:
-            plano, _ = sec.to_planar(to_2D=np.eye(4))
-        except Exception:
+        z = z0 + alturas[i]
+        plano = None
+        if secciones is not None:
+            plano = secciones[i]
+        else:
+            try:
+                sec = mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
+                plano = sec.to_planar(to_2D=np.eye(4))[0] if sec is not None else None
+            except Exception:
+                plano = None
+        if plano is None:
             continue
 
         polys = []
