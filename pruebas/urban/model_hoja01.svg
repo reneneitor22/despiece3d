@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="600.0mm" height="900.0mm" viewBox="0 0 600.000 900.000">
-<rect x="0" y="0" width="600.000" height="900.000" fill="#fff" stroke="#bbb" stroke-width="0.3"/>
-<g transform="translate(0,900.000) scale(1,-1)">
-<path d="M 13.000 13.725 L 13.000 18.728 L 35.277 18.653 L 35.285 18.585 L 13.000 13.725 Z" fill="none" stroke="#e11d48" stroke-width="0.35"/>
-</g>
-<text x="18.571" y="883.845" font-family="Helvetica,Arial" font-size="2.79" fill="#111" text-anchor="middle" dominant-baseline="central">M1</text>
-<text x="10.00" y="7.00" font-family="Helvetica,Arial" font-size="4" fill="#666">model  hoja 1/1  1:1000  lamina 2.0mm</text>
-</svg>
