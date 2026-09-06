@@ -12,19 +12,22 @@ import shapely
 from shapely.geometry import Polygon
 
 from despiece import Config, cargar_modelo
-from placas import extraer_placas, nombrar, marcar_envolvente
+from placas import extraer_placas, nombrar, marcar_envolvente, cortar_por_piso
 from uniones import detectar_contactos, aplicar_uniones, recortar_choques
 from estructura import _cortable, MAX_PLACAS
 
 
 def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm=0.05,
-           tope_voxeles=25e6, tolerancia=0.005, solo_envolvente=False):
+           tope_voxeles=25e6, tolerancia=0.005, solo_envolvente=False, piso=None):
     cfg = Config(escala, carton_mm, 0.0, (600, 900), unidades_modelo=unidades)
     m = cargar_modelo(ruta)
     placas, _ = extraer_placas(m, t_modelo=carton_mm / cfg.a_mm)
     # el mismo filtro que aplica el despiece: si una placa no se corta a esta
     # escala, tampoco tiene por que aparecer en la prueba de ensamble
     placas = [p for p in placas if _cortable(p, cfg)]
+    if piso is not None and placas:
+        placas, niveles, av = cortar_por_piso(placas, piso)
+        print('piso %d de %d' % (piso, len(niveles)) + ('  %s' % av if av else ''))
     if solo_envolvente and placas:
         marcar_envolvente(placas, m)
         placas = [p for p in placas if p.get('exterior')]
@@ -150,8 +153,9 @@ if __name__ == '__main__':
     ap.add_argument('--tolerancia', type=float, default=0.005,
                     help='fraccion del material que puede quedar en choque (0.005 = 0.5%)')
     ap.add_argument('--solo-envolvente', action='store_true')
+    ap.add_argument('--piso', type=int, default=None)
     a = ap.parse_args()
     r = probar(a.modelo, escala=a.escala, carton_mm=a.espesor, paso_mm=a.paso,
                unidades=a.unidades, tope_voxeles=a.tope_voxeles, tolerancia=a.tolerancia,
-               solo_envolvente=a.solo_envolvente)
+               solo_envolvente=a.solo_envolvente, piso=a.piso)
     sys.exit(0 if r['ok'] else 1)

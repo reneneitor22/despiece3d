@@ -5,7 +5,8 @@ import trimesh
 from shapely.geometry import Polygon, MultiPolygon
 import shapely.affinity as aff
 
-from placas import extraer_placas, nombrar, marcar_envolvente
+from placas import (extraer_placas, nombrar, marcar_envolvente,
+                    niveles_de_piso, cortar_por_piso)
 from uniones import detectar_contactos, aplicar_uniones, recortar_choques
 
 DIENTE_OBJ_MM = 12.0      # ancho buscado del diente, en mm de maqueta
@@ -25,7 +26,8 @@ def _cortable(placa, cfg):
     return lado >= MIN_LADO_MM and g.area * cfg.a_mm * cfg.a_mm >= MIN_AREA_MM2
 
 
-def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False):
+def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
+                         piso=None):
     """Devuelve (piezas_mm, info). Las piezas traen 'poly' en mm de maqueta."""
     # el espesor del carton llevado a unidades del modelo: lo necesita el camino
     # de superficies para saber que dos caras ya no caben separadas
@@ -37,6 +39,15 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False):
     antes = len(placas)
     placas = [p for p in placas if _cortable(p, cfg)]
     incortables = antes - len(placas)
+
+    # Un piso a la vez: la maqueta se arma planta por planta y cada muro recibe
+    # un punado de ranuras en vez de todas las del edificio.
+    niveles, aviso_piso = niveles_de_piso(placas), ''
+    if piso is not None and placas:
+        placas, niveles, aviso_piso = cortar_por_piso(placas, piso)
+        if aviso_piso and not placas:
+            return [], {'error': aviso_piso, 'descartados': descartados,
+                        'niveles': niveles}
 
     # Un edificio de cinco pisos trae losas de entrepiso y muros interiores que
     # el alumno casi nunca quiere: pidiendo solo la envolvente se queda la caja.
@@ -66,6 +77,12 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False):
     contactos, n_uniones = [], 0
     n_recortes, avisos_recorte = 0, []
     avisos_previos = []
+    if piso is not None:
+        avisos_previos.append('cortado el piso %d de %d (losas a %s m)'
+                              % (piso, len(niveles),
+                                 ', '.join('%.1f' % z for z in niveles)))
+    if aviso_piso:
+        avisos_previos.append(aviso_piso)
     if n_dentro:
         avisos_previos.append('%d placas eran de adentro (entrepisos y muros '
                               'interiores) y se dejaron fuera' % n_dentro)
@@ -116,6 +133,7 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False):
     info = {
         'n_placas': len(placas),
         'incortables': incortables,
+        'niveles': niveles,
         'fuera_por_tope': [p.get('id', '?') for p in fuera_por_tope],
         'n_uniones': n_uniones,
         'n_recortes': n_recortes,

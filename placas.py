@@ -548,6 +548,112 @@ def marcar_envolvente(placas, mesh, holgura=None):
     return n_ext
 
 
+def niveles_de_piso(placas, junta_m=0.60):
+    """Las alturas donde hay losa, de abajo hacia arriba.
+
+    Se agrupan las losas por su z: en un modelo real la losa de un nivel viene
+    partida en varios pedazos (el pasillo, el volado, cada crujia) y todos estan
+    a la misma altura salvo centimetros.
+
+    NO se intenta adivinar cuales son "los pisos de verdad". Se probo de dos
+    maneras y las dos fallan: agrupar con mas holgura encadena (en la casa
+    Bauhaus -1.8, -0.4, 1.3 y 2.2 se pegan de uno en uno y quedan 4 niveles para
+    un edificio de cinco), y filtrar por area tumba las plantas de una torre
+    porque su plancha de terreno es mas grande que todas juntas (Main Street
+    Place pasa de 33 niveles a 2). Se entregan los niveles que hay y el alumno
+    escoge: `--pisos` los lista.
+    """
+    zs = sorted(float(p['z_min']) for p in placas if p['tipo'] == 'losa')
+    if not zs:
+        return []
+    niveles, actual = [], [zs[0]]
+    for z in zs[1:]:
+        if z - actual[-1] <= junta_m:
+            actual.append(z)
+        else:
+            niveles.append(sum(actual) / len(actual))
+            actual = [z]
+    niveles.append(sum(actual) / len(actual))
+    return niveles
+
+
+def _recortar_a_franja(placa, z0, z1, holgura=1e-6):
+    """La parte de la placa que cae entre las alturas z0 y z1.
+
+    La placa es plana, asi que la z del mundo es una funcion afin de sus
+    coordenadas locales: la franja de alturas es una banda recta en su plano y
+    basta con intersecar.
+    """
+    F = placa['a_mundo']
+    a, b, c0 = float(F[2, 0]), float(F[2, 1]), float(F[2, 3])
+    norma = float(np.hypot(a, b))
+    if norma < 1e-9:                       # placa horizontal: entra o no entra
+        return placa['poly'] if z0 - holgura <= c0 <= z1 + holgura else None
+
+    n = np.array([a, b]) / norma           # hacia donde sube la z, en el plano
+    e = np.array([-n[1], n[0]])
+    t0, t1 = (z0 - c0) / norma, (z1 - c0) / norma
+    b_ = placa['poly'].bounds
+    L = (abs(b_[2] - b_[0]) + abs(b_[3] - b_[1])) * 2 + 10.0
+    banda = Polygon([n * t0 + e * (-L), n * t1 + e * (-L),
+                     n * t1 + e * L, n * t0 + e * L])
+    try:
+        g = placa['poly'].intersection(banda)
+    except Exception:
+        return None
+    if g.is_empty:
+        return None
+    if g.geom_type != 'Polygon':
+        partes = [x for x in getattr(g, 'geoms', []) if x.geom_type == 'Polygon']
+        if not partes:
+            return None
+        g = max(partes, key=lambda x: x.area)
+    return g
+
+
+def cortar_por_piso(placas, piso, junta_m=0.60):
+    """Se queda con un solo nivel: su losa y el tramo de muro que le toca.
+
+    Un edificio no se arma de una pieza, se arma planta por planta. Ademas
+    resuelve solo el problema del muro medianero: un muro de un solo nivel recibe
+    un punado de ranuras en vez de sesenta, y ya no hay que cancelarle uniones.
+
+    Los muros se CORTAN a la altura del nivel, no se descartan: la placa es plana,
+    asi que la z del mundo es una funcion afin de sus coordenadas locales y la
+    franja de alturas es una banda recta en su plano.
+
+    `piso` va desde 1. Devuelve (placas_del_piso, niveles, aviso).
+    """
+    niveles = niveles_de_piso(placas, junta_m)
+    if not niveles:
+        return placas, [], 'no se hallaron losas: no hay de donde sacar los pisos'
+    if piso < 1 or piso > len(niveles):
+        return [], niveles, ('el modelo tiene %d pisos y se pidio el %d'
+                             % (len(niveles), piso))
+
+    z0 = niveles[piso - 1]
+    if piso < len(niveles):
+        z1 = niveles[piso]
+    else:
+        z1 = max(float(np.max((p['a_mundo'] @ np.array(
+            [c[0], c[1], 0.0, 1.0]))[2]) for c in p['poly'].exterior.coords)
+            for p in placas)
+
+    salida = []
+    for p in placas:
+        g = _recortar_a_franja(p, z0 - junta_m / 2.0, z1 - junta_m / 2.0)
+        if g is None or g.area <= 0:
+            continue
+        q = dict(p)
+        q['poly'] = g
+        q['area'] = float(g.area)
+        q['vanos'] = len(g.interiors)
+        salida.append(q)
+    for k, p in enumerate(salida):
+        p['i'] = k
+    return salida, niveles, ''
+
+
 def nombrar(placas):
     """IDs legibles: M1..Mn muros, L1.. losas, T1.. techos. De abajo hacia arriba."""
     pref = {'muro': 'M', 'losa': 'L', 'techo': 'T'}

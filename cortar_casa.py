@@ -18,14 +18,33 @@ ap.add_argument('--salida', default='out_casa')
 ap.add_argument('--sin-uniones', action='store_true')
 ap.add_argument('--solo-envolvente', action='store_true',
                 help='solo la caja de afuera: sin entrepisos ni muros interiores')
+ap.add_argument('--piso', type=int, default=None,
+                help='cortar solo ese nivel (desde 1); ver --pisos')
+ap.add_argument('--pisos', action='store_true',
+                help='listar los niveles de losa que trae el modelo y salir')
 a = ap.parse_args()
 w, h = [float(v) for v in a.hoja.lower().split('x')]
 cfg = Config(a.escala, a.espesor, a.kerf, (w, h), unidades_modelo=a.unidades)
 
 t0 = time.time()
 m = cargar_modelo(a.modelo)
+if a.pisos:
+    from placas import extraer_placas, niveles_de_piso
+    from estructura import _cortable
+    _pl, _ = extraer_placas(m, t_modelo=cfg.espesor_mm / cfg.a_mm)
+    _pl = [p for p in _pl if _cortable(p, cfg)]
+    _niv = niveles_de_piso(_pl)
+    print('%s: %d niveles de losa' % (os.path.basename(a.modelo), len(_niv)))
+    for k, z in enumerate(_niv, 1):
+        arriba = _niv[k] if k < len(_niv) else None
+        print('   piso %-2d  losa a %7.2f m%s'
+              % (k, z, '  (hasta %.2f m)' % arriba if arriba else '  (hasta arriba)'))
+    print('\ncorre con --piso N para cortar uno solo')
+    sys.exit(0)
+
 piezas, info = despiece_estructural(m, cfg, con_uniones=not a.sin_uniones,
-                                    solo_envolvente=a.solo_envolvente)
+                                    solo_envolvente=a.solo_envolvente,
+                                    piso=a.piso)
 if 'error' in info:
     sys.exit(info['error'])
 
