@@ -2,3 +2,5 @@ JOBS/
 __pycache__/
 *.pyc
 modelos_prueba/*.zip
+modelos_prueba/
+out_real/

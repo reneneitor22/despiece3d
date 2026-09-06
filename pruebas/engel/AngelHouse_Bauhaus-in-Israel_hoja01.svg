@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500.0mm" height="700.0mm" viewBox="0 0 500.000 700.000">
+<rect x="0" y="0" width="500.000" height="700.000" fill="#fff" stroke="#bbb" stroke-width="0.3"/>
+<g transform="translate(0,700.000) scale(1,-1)">
+<path d="M 20.481 13.021 L 13.000 14.813 L 13.000 15.029 L 13.000 18.967 L 13.000 22.994 L 25.932 20.634 L 25.932 18.967 L 25.932 16.477 L 25.932 14.834 L 23.669 13.210 L 20.481 13.021 Z" fill="none" stroke="#e11d48" stroke-width="0.35"/>
+<path d="M 43.641 15.054 L 40.934 13.894 L 35.000 13.310 L 35.000 15.911 L 35.000 17.864 L 35.000 20.382 L 35.000 22.986 L 40.938 22.245 L 43.641 20.776 L 43.641 17.765 L 43.641 15.054 Z" fill="none" stroke="#e11d48" stroke-width="0.35"/>
+<path d="M 55.427 21.278 L 58.500 20.850 L 59.265 20.695 L 60.038 20.944 L 63.594 20.134 L 63.594 16.356 L 63.594 15.917 L 60.036 14.696 L 59.263 15.075 L 58.506 14.851 L 55.433 14.211 L 53.995 13.722 L 53.000 15.955 L 53.000 17.626 L 53.000 20.097 L 54.002 21.610 L 55.427 21.278 Z" fill="none" stroke="#e11d48" stroke-width="0.35"/>
+<path d="M 87.654 14.360 L 87.544 14.409 L 79.963 13.012 L 76.559 13.155 L 74.080 14.489 L 74.958 16.096 L 78.690 15.580 L 81.383 15.627 L 87.608 14.614 L 87.663 14.616 L 88.011 14.557 L 87.654 14.360 Z" fill="none" stroke="#e11d48" stroke-width="0.35"/>
+</g>
+<text x="19.466" y="682.278" font-family="Helvetica,Arial" font-size="2.50" fill="#111" text-anchor="middle" dominant-baseline="central">M2</text>
+<text x="39.321" y="680.877" font-family="Helvetica,Arial" font-size="2.50" fill="#111" text-anchor="middle" dominant-baseline="central">M1</text>
+<text x="58.297" y="681.139" font-family="Helvetica,Arial" font-size="2.50" fill="#111" text-anchor="middle" dominant-baseline="central">M3</text>
+<text x="81.024" y="685.477" font-family="Helvetica,Arial" font-size="2.50" fill="#111" text-anchor="middle" dominant-baseline="central">M4</text>
+<text x="10.00" y="7.00" font-family="Helvetica,Arial" font-size="4" fill="#666">AngelHouse_Bauhaus-in-Israel  hoja 1/1  1:100  lamina 2.0mm</text>
+</svg>
