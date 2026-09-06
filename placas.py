@@ -293,7 +293,7 @@ def _proyectar_a_marco(placa, F):
     return g if g.is_valid else g.buffer(0)
 
 
-def fundir_pegadas(placas, t_modelo, min_encime=0.05):
+def _fundir_una_vuelta(placas, t_modelo, min_encime=0.05):
     """Dos placas paralelas mas juntas que el propio carton son UNA placa.
 
     Pasa en los dos caminos. En un STL de verdad la losa viene como dos solidos
@@ -388,6 +388,22 @@ def fundir_pegadas(placas, t_modelo, min_encime=0.05):
     for k, p in enumerate(salida):
         p['i'] = k
     return salida, fundidas
+
+
+def fundir_pegadas(placas, t_modelo, min_encime=0.05, vueltas=6):
+    """Repite hasta que no quede nada por fundir.
+
+    Con una sola pasada no basta: al fundir dos placas nace una tercera sobre el
+    plano medio, y esa puede quedar pegada a otra que antes estaba lejos de las
+    dos. En Main Street Place la primera vuelta funde 117 y la segunda otras 11.
+    """
+    total = 0
+    for _ in range(vueltas):
+        placas, n = _fundir_una_vuelta(placas, t_modelo, min_encime)
+        total += n
+        if not n:
+            break
+    return placas, total
 
 
 def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
