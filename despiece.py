@@ -193,6 +193,21 @@ def _escalar_poly(p, f, ox, oy):
 
 
 # ---------------------------------------------------------------- piezas
+def _sufijo_alfa(j):
+    """0->a, 25->z, 26->aa, 27->ab...  Nunca se sale del alfabeto (bug: chr(97+j)
+    pasaba a '{','|','}' con capas de mas de 26 islas, tipico en terreno real)."""
+    s = ''
+    j += 1
+    while j:
+        j, r = divmod(j - 1, 26)
+        s = chr(97 + r) + s
+    return s
+
+
+def _id_pieza(n_capa, j, n_polys):
+    return '%02d%s' % (n_capa, _sufijo_alfa(j) if n_polys > 1 else '')
+
+
 def armar_piezas(capas, vaciar=True, ceja_mm=7.0, min_hueco_mm2=900.0):
     """Cada poligono de cada capa es una pieza. Guarda la silueta de la capa
     de ARRIBA para grabarla encima -> asi el alumno sabe donde apilar."""
@@ -225,7 +240,7 @@ def armar_piezas(capas, vaciar=True, ceja_mm=7.0, min_hueco_mm2=900.0):
                     pass
 
             piezas.append({
-                'id': '%02d%s' % (capa['n'], chr(97 + j) if len(capa['polys']) > 1 else ''),
+                'id': _id_pieza(capa['n'], j, len(capa['polys'])),
                 'capa': capa['n'],
                 'z_real': capa['z_real'],
                 'poly': poly,

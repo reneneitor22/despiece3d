@@ -1,0 +1,74 @@
+<!doctype html><meta charset="utf-8">
+<title>Despiece 3D — model</title>
+<style>
+:root{color-scheme:light}*{box-sizing:border-box}
+body{margin:0;font:14px/1.55 -apple-system,BlinkMacSystemFont,Helvetica,Arial;color:#18181b;background:#f6f6f7}
+.wrap{max-width:940px;margin:0 auto;padding:34px 20px 90px}
+h1{font-size:26px;letter-spacing:-.02em;margin:0 0 4px}
+.sub{color:#71717a;margin:0 0 24px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:10px;margin:0 0 22px}
+.kpi{background:#fff;border:1px solid #e5e5e7;border-radius:11px;padding:12px 14px}
+.kpi b{display:block;font-size:20px}.kpi span{color:#71717a;font-size:12px}
+.aviso{background:#fff7ed;border:1px solid #f0c98a;color:#b45309;border-radius:11px;padding:11px 14px;margin:0 0 12px}
+.nota{color:#71717a;font-size:13px;margin:0 0 12px}
+.par{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:0 0 20px}
+@media(max-width:720px){.par{grid-template-columns:1fr}}
+.vista{background:#fff;border:1px solid #e5e5e7;border-radius:12px;padding:12px}
+.vista h3{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#71717a}
+.vista svg{width:100%;height:auto}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e5e7;border-radius:11px;overflow:hidden}
+th,td{text-align:left;padding:7px 11px;border-bottom:1px solid #f2f2f4;font-size:13px}
+th{background:#fafafa;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#71717a}
+td.id{font-family:ui-monospace,Menlo,monospace;font-weight:600}
+.hoja{background:#fff;border:1px solid #e5e5e7;border-radius:12px;padding:16px;margin:14px 0}
+.hoja h2{font-size:14px;margin:0 0 10px}.hoja small{color:#a1a1aa;font-weight:400}
+.hoja svg{width:100%;height:auto;border:1px solid #eee}
+.leyenda{display:flex;gap:16px;font-size:12px;color:#71717a;margin:18px 0 4px;flex-wrap:wrap}
+.leyenda i{display:inline-block;width:20px;height:0;border-top:2px solid;margin-right:6px;vertical-align:middle}
+ol.pasos{background:#fff;border:1px solid #e5e5e7;border-radius:11px;padding:14px 14px 14px 34px;margin:10px 0 0}
+ol.pasos li{margin:4px 0}
+@media print{body{background:#fff}.wrap{max-width:none;padding:0}.hoja{page-break-after:always;border:0}}
+</style>
+<div class="wrap">
+<h1>model</h1>
+<p class="sub">Escala 1:1000 · lámina 2.0 mm · hoja 600×900 mm · kerf 0.15 mm</p>
+<div class="kpis">
+ <div class="kpi"><b>1</b><span>piezas</span></div>
+ <div class="kpi"><b>1</b><span>hojas</span></div>
+ <div class="kpi"><b>0</b><span>uniones</span></div>
+ <div class="kpi"><b>1 cm²</b><span>material cortado</span></div>
+</div>
+<div class="nota">Se ignoraron 322 cuerpos que no son láminas (astillas o sólidos macizos).</div>
+<div class="par">
+ <div class="vista"><h3>Armada</h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 6915" width="100%">
+<path d="M 20.0 19.6 L 740.0 6895.0 L 20.0 1669.3 L 20.0 19.6 Z" fill="#fde7ec" fill-rule="evenodd" stroke="#e11d48" stroke-width="1.1" stroke-linejoin="round" fill-opacity="1"/>
+<text x="200.0" y="2150.9" font-family="Helvetica,Arial" font-size="12" font-weight="600" fill="#111" text-anchor="middle" dominant-baseline="central" paint-order="stroke" stroke="#fff" stroke-width="3">M1</text>
+</svg></div>
+ <div class="vista"><h3>Explotada</h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 6915" width="100%">
+<path d="M 20.0 19.6 L 740.0 6895.0 L 20.0 1669.3 L 20.0 19.6 Z" fill="#fde7ec" fill-rule="evenodd" stroke="#e11d48" stroke-width="1.1" stroke-linejoin="round" fill-opacity="0.55"/>
+<text x="200.0" y="2150.9" font-family="Helvetica,Arial" font-size="12" font-weight="600" fill="#111" text-anchor="middle" dominant-baseline="central" paint-order="stroke" stroke="#fff" stroke-width="3">M1</text>
+</svg></div>
+</div>
+<h2 style="font-size:15px;margin:26px 0 8px">Cómo se arma</h2>
+<ol class="pasos">
+ <li>Corta todas las hojas. Las líneas <b style="color:#e11d48">rojas</b> se cortan; las
+     <b style="color:#2563eb">azules punteadas</b> sólo se graban.</li>
+ <li>Empieza por la base (L…) y clava en ella los muros (M…) por los dientes.</li>
+ <li>Las marcas grabadas indican dónde cae cada muro: si no coincide, la pieza va al revés.</li>
+ <li>Cierra con los faldones del techo (T…). Estos suelen ir pegados al final.</li>
+ <li>Los dientes entran a presión. Si aprieta de más, lija el diente; no fuerces el cartón.</li>
+</ol>
+<h2 style="font-size:15px;margin:26px 0 8px">Piezas</h2>
+<table><thead><tr><th>Pieza</th><th>Tipo</th><th>Medida</th><th>Vanos</th>
+<th>Dientes</th><th>Ranuras</th><th>Hoja</th></tr></thead><tbody><tr><td class="id">M1</td><td>muro</td><td>22 × 5 mm</td><td>—</td><td>—</td><td>—</td><td>1</td></tr></tbody></table>
+<div class="leyenda"><span><i style="color:#e11d48"></i>corte</span>
+<span><i style="color:#2563eb;border-top-style:dashed"></i>grabado — dónde apoya la otra pieza</span></div>
+<section class="hoja"><h2>Hoja 1 <small>1 piezas</small></h2><svg xmlns="http://www.w3.org/2000/svg" width="600.0mm" height="900.0mm" viewBox="0 0 600.000 900.000">
+<rect x="0" y="0" width="600.000" height="900.000" fill="#fff" stroke="#bbb" stroke-width="0.3"/>
+<g transform="translate(0,900.000) scale(1,-1)">
+<path d="M 13.000 13.725 L 13.000 18.728 L 35.277 18.653 L 35.285 18.585 L 13.000 13.725 Z" fill="none" stroke="#e11d48" stroke-width="0.35"/>
+</g>
+<text x="18.571" y="883.845" font-family="Helvetica,Arial" font-size="2.79" fill="#111" text-anchor="middle" dominant-baseline="central">M1</text>
+<text x="10.00" y="7.00" font-family="Helvetica,Arial" font-size="4" fill="#666">model  hoja 1/1  1:1000  lamina 2.0mm</text>
+</svg></section>
+</div>

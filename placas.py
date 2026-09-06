@@ -45,8 +45,80 @@ def _marco(ejes, centro):
     return F
 
 
+def _frame_desde_normal(n, centro):
+    """Marco 4x4 con Z = n y un U cualquiera perpendicular (la rotacion en el
+    plano no afecta el corte; el acomodo ya rota la pieza)."""
+    n = np.asarray(n, float); n = n / np.linalg.norm(n)
+    ref = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(ref, n); u = u / np.linalg.norm(u)
+    v = np.cross(n, u)
+    F = np.eye(4)
+    F[:3, 0], F[:3, 1], F[:3, 2], F[:3, 3] = u, v, n, centro
+    return F
+
+
+def _placas_de_superficies(mesh, min_area):
+    """Modelo hecho de CARAS SIN ESPESOR (SketchUp, export de croquis): no hay
+    cuerpo que seccionar. Agrupamos las caras coplanares y conexas (facets) y
+    tomamos cada parche como una placa con espesor sintetico (el del carton).
+    """
+    m = mesh.copy()
+    try:
+        m.merge_vertices()
+    except Exception:
+        pass
+    facets = list(getattr(m, 'facets', []))
+    if not facets:
+        return [], 'sin parches coplanares'
+
+    areas = m.facets_area
+    normales = m.facets_normal
+    placas, sueltas = [], 0
+    for k, caras in enumerate(facets):
+        area = float(areas[k])
+        n = np.asarray(normales[k], float)
+        if area < min_area or not np.isfinite(n).all() or np.linalg.norm(n) < 0.5:
+            sueltas += 1
+            continue
+        n = n / np.linalg.norm(n)
+        tri = m.faces[caras]
+        vids = np.unique(tri)
+        centro = m.vertices[vids].mean(axis=0)
+        F = _frame_desde_normal(n, centro)
+        inv = np.linalg.inv(F)
+        P = (inv @ np.hstack([m.vertices, np.ones((len(m.vertices), 1))]).T).T[:, :3]
+        tris2d = [Polygon(P[t, :2]) for t in tri]
+        try:
+            poly = unary_union([g.buffer(0) for g in tris2d if g.is_valid and g.area > 1e-12])
+        except Exception:
+            continue
+        cand = [poly] if poly.geom_type == 'Polygon' else list(getattr(poly, 'geoms', []))
+        for g in cand:
+            if g.is_empty or g.area < min_area:
+                continue
+            minx, miny, _, _ = g.bounds
+            g = Polygon([(x - minx, y - miny) for x, y in g.exterior.coords],
+                        [[(x - minx, y - miny) for x, y in r.coords] for r in g.interiors])
+            Fp = F.copy(); Fp[:3, 3] = centro + F[:3, 0] * minx + F[:3, 1] * miny
+            placas.append({
+                'i': len(placas),
+                'tipo': clasificar(n),
+                'normal': n,
+                'espesor_real': 0.0,          # sintetico: se usa el del carton
+                'poly': g,
+                'a_mundo': Fp,
+                'centro': np.asarray(Fp[:3, 3]),
+                'area': float(g.area),
+                'z_min': float(m.vertices[vids][:, 2].min()),
+                'vanos': len(g.interiors),
+                'sintetica': True,
+            })
+    return placas, ('%d parches sueltos ignorados' % sueltas if sueltas else '')
+
+
 def extraer_placas(mesh, min_area=MIN_AREA_REAL):
-    """Devuelve lista de placas: normal, espesor real, poligono 2D (m), marco 3D."""
+    """Devuelve (placas, descartados). Cada placa: normal, espesor real,
+    poligono 2D (m), marco 3D."""
     cuerpos = mesh.split(only_watertight=False)
     if len(cuerpos) <= 1:
         cuerpos = [mesh]
@@ -56,7 +128,12 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL):
         if len(c.faces) < 4 or c.area < 1e-6:
             descartados.append((idx, 'astilla degenerada (%d caras)' % len(c.faces)))
             continue
-        ejes, ext, centro = _obb(c)
+        try:
+            ejes, ext, centro = _obb(c)
+        except Exception as e:
+            # cuerpos degenerados (vertices colineales) revientan oriented_bounds
+            descartados.append((idx, 'caja orientada no calculable: %s' % e))
+            continue
         esp, medio, largo = ext
         if largo <= 1e-9 or esp / max(largo, 1e-9) > RAZON_PLACA or medio < 1e-6:
             descartados.append((idx, 'no es lamina (%.2f x %.2f x %.2f m)' % (esp, medio, largo)))
@@ -91,6 +168,21 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL):
             'z_min': float(c.bounds[0][2]),
             'vanos': len(poly.interiors),
         })
+
+    # Fallback: si casi no salio nada como solido, el modelo son caras sin
+    # espesor. Se agrupan los parches coplanares y se les da espesor sintetico.
+    area_solida = sum(p['area'] for p in placas)
+    if len(placas) < 3 or area_solida < 0.15 * float(mesh.area):
+        sup, motivo = _placas_de_superficies(mesh, min_area)
+        if len(sup) > len(placas):
+            for i, p in enumerate(sup):
+                p['i'] = i
+            nota = 'modelo de caras sin espesor: %d placas con grosor sintetico' % len(sup)
+            if motivo:
+                nota += ' (%s)' % motivo
+            descartados.append((-1, nota))
+            return sup, descartados
+
     return placas, descartados
 
 
