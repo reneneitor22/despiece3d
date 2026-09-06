@@ -170,7 +170,7 @@ def _poly_de_caras(mesh, idx, F):
     return u, float(V[:, 2].min())
 
 
-def _placas_de_superficies(mesh, min_area, muro_max=MURO_MAX):
+def _placas_de_superficies(mesh, min_area, muro_max=MURO_MAX, t_modelo=0.0):
     """Modelo hecho de CARAS SIN ESPESOR (SketchUp, croquis exportado): no hay
     cuerpo que seccionar, asi que la placa es la propia cara.
 
@@ -195,43 +195,56 @@ def _placas_de_superficies(mesh, min_area, muro_max=MURO_MAX):
             continue
         planos.append({'n': n, 'd': d, 'poly': poly, 'z_min': z_min, 'idx': idx})
 
+    # Se agrupa, no se emparejan de dos en dos. Un muro real no siempre trae dos
+    # caras limpias: trae la de afuera, la de adentro y a veces el paño de un
+    # aplanado o de una particion pegada. Tomandolas por pares, la tercera se
+    # queda suelta y termina como una placa aparte a 7 cm de la otra -> en la
+    # maqueta son dos cartones que ocupan el mismo lugar.
     tomados = set()
     placas, sueltas = [], 0
     for i, a in enumerate(planos):
         if i in tomados:
             continue
-        pareja, sep = None, 0.0
+        grupo = [i]
         for j in range(i + 1, len(planos)):
             if j in tomados:
                 continue
             b = planos[j]
             if float(np.dot(a['n'], b['n'])) < 1 - TOL_NORMAL:
                 continue
-            delta = abs(b['d'] - a['d'])
-            if delta < 1e-4 or delta > muro_max:
+            # contra el grupo entero, no solo contra la primera: asi entra la
+            # tercera cara aunque quede lejos de la de arranque
+            if min(abs(b['d'] - planos[k]['d']) for k in grupo) > muro_max:
                 continue
-            # tienen que ser la misma pared vista por los dos lados, no dos
-            # paredes distintas que por casualidad son paralelas
             try:
-                comun = a['poly'].intersection(b['poly']).area
+                comun = max(b['poly'].intersection(planos[k]['poly']).area for k in grupo)
             except Exception:
                 comun = 0.0
-            if comun < 0.5 * min(a['poly'].area, b['poly'].area):
+            menor = min(b['poly'].area, min(planos[k]['poly'].area for k in grupo))
+            cerca = min(abs(b['d'] - planos[k]['d']) for k in grupo)
+            # Dos criterios, y basta con uno:
+            #   - se tapan mas de la mitad: son la misma pared por los dos lados;
+            #   - o estan mas juntas que el propio carton: aunque sean paredes
+            #     distintas, a esta escala NO CABEN las dos. Un muro y su vecino a
+            #     6 cm son 0.6 mm a 1:100, y el carton mide 2. Si salen como dos
+            #     piezas, el alumno tiene dos cartones peleando el mismo lugar.
+            if comun < 0.5 * menor and not (t_modelo > 0 and cerca < t_modelo
+                                            and comun > 0.05 * menor):
                 continue
-            pareja, sep = j, delta
-            break
+            grupo.append(j)
+            tomados.add(j)
 
-        if pareja is None:
-            n, d, poly, z_min = a['n'], a['d'], a['poly'], a['z_min']
-            espesor = 0.0
+        ds = [planos[k]['d'] for k in grupo]
+        n = a['n']
+        espesor = max(ds) - min(ds)          # de la cara de afuera a la de adentro
+        d = (max(ds) + min(ds)) / 2.0        # plano medio del muro
+        z_min = min(planos[k]['z_min'] for k in grupo)
+        if len(grupo) == 1:
+            poly = a['poly']
         else:
-            b = planos[pareja]
-            tomados.add(pareja)
-            n, espesor = a['n'], sep
-            d = (a['d'] + b['d']) / 2.0
-            z_min = min(a['z_min'], b['z_min'])
             try:
-                poly = unary_union([a['poly'], b['poly']]).buffer(COSTURA).buffer(-COSTURA)
+                poly = unary_union([planos[k]['poly'] for k in grupo])
+                poly = poly.buffer(COSTURA).buffer(-COSTURA)
             except Exception:
                 poly = a['poly']
 
@@ -261,13 +274,14 @@ def _placas_de_superficies(mesh, min_area, muro_max=MURO_MAX):
             })
 
     n_fundidas = len(tomados)
-    nota = '%d placas, %d de ellas son las dos caras de un muro' % (len(placas), n_fundidas)
+    nota = '%d placas; %d caras se fundieron con otra por ser el mismo muro' % (len(placas), n_fundidas)
     if sueltas:
         nota += '; %d parches por debajo de %.2f m2 ignorados' % (sueltas, min_area)
     return placas, nota
 
 
-def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP):
+def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
+                   t_modelo=0.0):
     """Devuelve (placas, descartados). Cada placa: normal, espesor real,
     poligono 2D (m), marco 3D."""
     # sin soldar, un OBJ real se parte en miles de cuerpos de dos triangulos y
@@ -327,7 +341,7 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP):
     # espesor. Se agrupan los parches coplanares y se les da espesor sintetico.
     area_solida = sum(p['area'] for p in placas)
     if len(placas) < 3 or area_solida < 0.15 * float(mesh.area):
-        sup, motivo = _placas_de_superficies(mesh, min_area_sup)
+        sup, motivo = _placas_de_superficies(mesh, min_area_sup, t_modelo=t_modelo)
         if len(sup) > len(placas):
             for i, p in enumerate(sup):
                 p['i'] = i

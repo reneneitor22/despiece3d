@@ -27,7 +27,9 @@ def _cortable(placa, cfg):
 
 def despiece_estructural(mesh, cfg, con_uniones=True):
     """Devuelve (piezas_mm, info). Las piezas traen 'poly' en mm de maqueta."""
-    placas, descartados = extraer_placas(mesh)
+    # el espesor del carton llevado a unidades del modelo: lo necesita el camino
+    # de superficies para saber que dos caras ya no caben separadas
+    placas, descartados = extraer_placas(mesh, t_modelo=cfg.espesor_mm / cfg.a_mm)
 
     # Lo que manda no es el tamano en el modelo, es el de la MAQUETA: una placa
     # de 1 m2 es una pieza de 10x10 mm a 1:100 y de 2x2 mm a 1:500. Abajo de
