@@ -10,6 +10,57 @@ os.makedirs(JOBS, exist_ok=True)
 MAX = 120 * 1024 * 1024
 EXT_OK = {'.stl', '.obj', '.ply', '.glb', '.gltf', '.dae', '.off', '.3mf'}
 
+MOD = os.path.join(BASE, 'modelos_prueba')
+# Ejemplos listos para probar sin buscar archivos. Los sinteticos siempre estan;
+# los de internet solo si se clonaron los repos (ver PRUEBAS_REALES.md).
+EJEMPLOS = [
+    {'id': 'casa', 'titulo': 'Casa de prueba',
+     'pie': 'Sintetica, con vanos, losa y techo · 9 placas',
+     'ruta': os.path.join(BASE, 'out', 'casa_prueba.stl'),
+     'campos': {'modo': 'estructura', 'escala': '100', 'espesor': '2',
+                'hoja': '600x900', 'unidades': 'm'}},
+    {'id': 'terreno', 'titulo': 'Terreno de prueba',
+     'pie': 'Sintetico, curvas de nivel · 26 piezas',
+     'ruta': os.path.join(BASE, 'out', 'terreno_prueba.stl'),
+     'campos': {'modo': 'curvas', 'escala': '500', 'espesor': '3',
+                'hoja': '500x700', 'unidades': 'm'}},
+    {'id': 'bauhaus_env', 'titulo': 'Casa Engel · envolvente',
+     'pie': 'Bauhaus de Tel Aviv, muros sin espesor · 56 placas en 1 hoja',
+     'ruta': os.path.join(MOD, 'ladybug/obj/engel-house/AngelHouse_Bauhaus-in-Israel.obj'),
+     'campos': {'modo': 'estructura', 'escala': '100', 'espesor': '2',
+                'hoja': '600x900', 'unidades': 'm', 'envolvente': '1'}},
+    {'id': 'bauhaus_piso', 'titulo': 'Casa Engel · piso 10',
+     'pie': 'Un solo nivel, muros cortados a su altura · 38 placas',
+     'ruta': os.path.join(MOD, 'ladybug/obj/engel-house/AngelHouse_Bauhaus-in-Israel.obj'),
+     'campos': {'modo': 'estructura', 'escala': '100', 'espesor': '2',
+                'hoja': '600x900', 'unidades': 'm', 'piso': '10'}},
+    {'id': 'bauhaus', 'titulo': 'Casa Engel · completa',
+     'pie': 'Con entrepisos y muros interiores · 143 placas',
+     'ruta': os.path.join(MOD, 'ladybug/obj/engel-house/AngelHouse_Bauhaus-in-Israel.obj'),
+     'campos': {'modo': 'estructura', 'escala': '100', 'espesor': '2',
+                'hoja': '600x900', 'unidades': 'm'}},
+    {'id': 'mainstreet', 'titulo': 'Main Street Place',
+     'pie': 'STL de 703 mil caras, 10 676 cuerpos · 303 placas',
+     'ruta': os.path.join(MOD, 'ladybug/stl-samples/MainStreetPlace.stl'),
+     'campos': {'modo': 'estructura', 'escala': '500', 'espesor': '2',
+                'hoja': '600x900', 'unidades': 'm'}},
+    {'id': 'gale', 'titulo': 'Crater Gale (Marte)',
+     'pie': 'Topografia de la NASA · 247 piezas, 11 partidas por no caber',
+     'ruta': os.path.join(MOD, 'nasa/stl/gale_crater.STL'),
+     'campos': {'modo': 'curvas', 'escala': '200', 'espesor': '3',
+                'hoja': '500x700', 'unidades': 'm'}},
+    {'id': 'valles', 'titulo': 'Valles Marineris (Marte)',
+     'pie': 'Topografia de la NASA · 293 piezas en 33 hojas',
+     'ruta': os.path.join(MOD, 'nasa/stl/mars_valles_mar.STL'.replace('.STL', '.stl')),
+     'campos': {'modo': 'curvas', 'escala': '100', 'espesor': '3',
+                'hoja': '500x700', 'unidades': 'm'}},
+]
+
+
+def ejemplos_disponibles():
+    """Solo los que de verdad estan en disco: los de internet son opcionales."""
+    return [e for e in EJEMPLOS if os.path.exists(e['ruta'])]
+
 
 def parse_multipart(body, boundary):
     campos, archivo = {}, None
@@ -55,6 +106,11 @@ class H(BaseHTTPRequestHandler):
         ruta = self.path.split('?')[0]
         if ruta in ('/', '/index.html'):
             return self._send(200, 'text/html; charset=utf-8', PAGINA)
+        if ruta == '/ejemplos':
+            lista = [{'id': e['id'], 'titulo': e['titulo'], 'pie': e['pie']}
+                     for e in ejemplos_disponibles()]
+            return self._send(200, 'application/json; charset=utf-8',
+                              json.dumps(lista, ensure_ascii=False))
         m = re.match(r'^/r/([a-f0-9]{12})/(.+)$', ruta)
         if m:
             job, nombre = m.group(1), os.path.basename(m.group(2))
@@ -69,7 +125,35 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, tipo, open(f, 'rb').read(), extra)
         self._send(404, 'text/plain; charset=utf-8', 'no existe')
 
+    def _ejemplo(self):
+        """Corre un modelo que ya esta en disco, con sus parametros preparados."""
+        try:
+            n = int(self.headers.get('Content-Length', 0))
+            pedido = json.loads(self.rfile.read(n) or b'{}')
+            elegido = next((e for e in ejemplos_disponibles()
+                            if e['id'] == pedido.get('id')), None)
+            if elegido is None:
+                return self._send(404, 'application/json; charset=utf-8',
+                                  json.dumps({'error': 'ese ejemplo no esta en disco'}))
+            job = uuid.uuid4().hex[:12]
+            carpeta = os.path.join(JOBS, job)
+            os.makedirs(carpeta, exist_ok=True)
+            ext = os.path.splitext(elegido['ruta'])[1].lower()
+            destino = os.path.join(carpeta, 'modelo' + ext)
+            shutil.copyfile(elegido['ruta'], destino)
+            r = procesar(destino, dict(elegido['campos']), carpeta, job,
+                         re.sub(r'[^A-Za-z0-9_-]+', '_', elegido['titulo']))
+            return self._send(200, 'application/json; charset=utf-8',
+                              json.dumps(r, ensure_ascii=False))
+        except Exception as e:
+            traceback.print_exc()
+            return self._send(500, 'application/json; charset=utf-8',
+                              json.dumps({'error': '%s: %s' % (type(e).__name__, e)},
+                                         ensure_ascii=False))
+
     def do_POST(self):
+        if self.path == '/ejemplo':
+            return self._ejemplo()
         if self.path != '/cortar':
             return self._send(404, 'text/plain', 'no existe')
         try:
@@ -223,7 +307,13 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
     import exportar
 
     con_uniones = campos.get('uniones', '1') not in ('0', 'false', '')
-    piezas, info = despiece_estructural(m, cfg, con_uniones=con_uniones)
+    envolvente = campos.get('envolvente', '0') in ('1', 'true', 'on')
+    macizos = campos.get('macizos', '0') in ('1', 'true', 'on')
+    piso = campos.get('piso', '').strip()
+    piso = int(piso) if piso.isdigit() and int(piso) > 0 else None
+    piezas, info = despiece_estructural(m, cfg, con_uniones=con_uniones,
+                                        solo_envolvente=envolvente, piso=piso,
+                                        laminar_macizos=macizos)
     if 'error' in info:
         return {'error': info['error']}
 
@@ -320,6 +410,18 @@ button.go:disabled{opacity:.5;cursor:default}
 .aviso{background:var(--avisobg);border:1px solid color-mix(in srgb,var(--aviso) 35%,transparent);
  color:var(--aviso);border-radius:11px;padding:11px 14px;margin-bottom:14px;font-size:13px}
 .acciones{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}
+.ejs{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:10px;margin-top:14px}
+.ej{text-align:left;padding:11px 13px;border:1px solid var(--linea);border-radius:11px;
+ background:var(--card);color:var(--txt);font:inherit;cursor:pointer;transition:border-color .15s}
+.ej:hover:not(:disabled){border-color:var(--acento)}
+.ej:disabled{opacity:.55;cursor:default}
+.ej b{display:block;font-size:14px;margin-bottom:2px}
+.ej small{color:var(--tenue);font-size:12px;line-height:1.35;display:block}
+.ejs-tit{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;
+ color:var(--tenue);margin:22px 0 0}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--txt);
+ text-transform:none;letter-spacing:0;font-weight:500;margin:0}
+.chk input{width:auto;min-width:0}
 .btn{display:inline-block;padding:10px 16px;border-radius:10px;text-decoration:none;font-size:14px;
  font-weight:600;border:1px solid var(--linea);color:var(--txt);background:var(--card)}
 .btn.pri{background:var(--txt);color:var(--bg);border-color:var(--txt)}
@@ -424,10 +526,24 @@ button.go:disabled{opacity:.5;cursor:default}
     <label><input type="radio" name="un" value="0"><span>A tope</span></label>
    </div>
   </div>
+  <div id="cPiso">
+   <label>Qué cortar</label>
+   <label class="chk"><input type="checkbox" id="envolvente"> Solo la envolvente</label>
+   <label class="chk" style="margin-top:6px"><input type="checkbox" id="macizos">
+    Laminar escaleras y muebles</label>
+  </div>
+  <div id="cNivel">
+   <label>Piso (vacío = todos)</label>
+   <input type="number" id="piso" min="1" step="1" placeholder="todos">
+  </div>
  </div>
 
  <button class="go" id="go" disabled>Elige un modelo</button>
  <div class="err" id="err" hidden></div>
+
+ <p class="ejs-tit">O prueba con un ejemplo</p>
+ <div class="ejs" id="ejs"></div>
+ <p class="lead" id="ejsNota" style="margin-top:10px;font-size:13px" hidden></p>
 </div>
 
 <div id="res" hidden></div>
@@ -441,6 +557,7 @@ const modo=()=>document.querySelector('input[name=modo]:checked').value;
 function pintarModo(){
   const est=modo()==='estructura';
   $('cVaciado').hidden=est; $('cUniones').hidden=!est;
+  $('cPiso').hidden=!est; $('cNivel').hidden=!est;
   $('espesorSel').value=est?'2':'3';
   $('espesorSel').dispatchEvent(new Event('change'));
   $('escala').value=est?100:200;
@@ -476,6 +593,46 @@ $('espesorSel').onchange=e=>{
   if(!otro)$('espesor').value=e.target.value;};
 
 pintarModo();
+
+// Ejemplos: modelos que ya estan en disco del lado del servidor. Los sinteticos
+// siempre estan; los de internet solo si se clonaron los repos.
+let corriendo=false;
+fetch('/ejemplos').then(r=>r.json()).then(lista=>{
+  const cont=$('ejs');
+  cont.innerHTML=lista.map(e=>
+    '<button class="ej" data-id="'+e.id+'"><b>'+e.titulo+'</b><small>'+e.pie+'</small></button>'
+  ).join('');
+  if(lista.length<4){
+    $('ejsNota').hidden=false;
+    $('ejsNota').textContent='Solo aparecen los ejemplos que estan en disco. '+
+      'Para los modelos reales, clona los repos que dice PRUEBAS_REALES.md.';
+  }
+  cont.querySelectorAll('.ej').forEach(b=>b.onclick=()=>correrEjemplo(b));
+}).catch(()=>{});
+
+async function correrEjemplo(boton){
+  if(corriendo)return;
+  corriendo=true;
+  const antes=boton.innerHTML;
+  document.querySelectorAll('.ej').forEach(b=>b.disabled=true);
+  boton.innerHTML='<b><span class="spin"></span>Rebanando y acomodando…</b>'+
+                  '<small>los modelos grandes tardan un minuto</small>';
+  $('err').hidden=true;$('res').hidden=true;
+  try{
+    const r=await fetch('/ejemplo',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:boton.dataset.id})});
+    const d=await r.json();
+    if(d.error){fallo(d.error);}else{pintar(d);
+      $('res').scrollIntoView({behavior:'smooth',block:'start'});}
+  }catch(e){fallo('No se pudo procesar: '+e.message);}
+  finally{
+    corriendo=false;
+    boton.innerHTML=antes;
+    document.querySelectorAll('.ej').forEach(b=>b.disabled=false);
+  }
+}
+
 $('go').onclick=async()=>{
   if(!archivo)return;
   $('err').hidden=true;$('res').hidden=true;
@@ -493,6 +650,9 @@ $('go').onclick=async()=>{
   fd.append('vaciar',document.querySelector('input[name=vc]:checked').value);
   fd.append('modo',modo());
   fd.append('uniones',document.querySelector('input[name=un]:checked').value);
+  fd.append('envolvente',$('envolvente').checked?'1':'0');
+  fd.append('macizos',$('macizos').checked?'1':'0');
+  fd.append('piso',$('piso').value||'');
   try{
     const r=await fetch('/cortar',{method:'POST',body:fd});
     const d=await r.json();

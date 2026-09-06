@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "despiece3d",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "/Users/renerodriguez/Desktop/Claude/despiece3d/app.py",
+        "3562"
+      ],
+      "port": 3562
+    }
+  ]
+}
