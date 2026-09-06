@@ -22,6 +22,8 @@ ap.add_argument('--piso', type=int, default=None,
                 help='cortar solo ese nivel (desde 1); ver --pisos')
 ap.add_argument('--pisos', action='store_true',
                 help='listar los niveles de losa que trae el modelo y salir')
+ap.add_argument('--laminar-macizos', action='store_true',
+                help='escaleras, muebles y columnas en rebanadas que se apilan')
 a = ap.parse_args()
 w, h = [float(v) for v in a.hoja.lower().split('x')]
 cfg = Config(a.escala, a.espesor, a.kerf, (w, h), unidades_modelo=a.unidades)
@@ -44,7 +46,8 @@ if a.pisos:
 
 piezas, info = despiece_estructural(m, cfg, con_uniones=not a.sin_uniones,
                                     solo_envolvente=a.solo_envolvente,
-                                    piso=a.piso)
+                                    piso=a.piso,
+                                    laminar_macizos=a.laminar_macizos)
 if 'error' in info:
     sys.exit(info['error'])
 

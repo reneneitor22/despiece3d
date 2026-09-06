@@ -16,6 +16,15 @@ MIN_AREA_MM2 = 20.0       # mm2 de maqueta: menos que esto es confeti
 MAX_PLACAS = 400          # arriba de esto ya no es maqueta escolar
 
 
+def _cortable_mm(poly):
+    """Igual que _cortable pero para geometria que YA viene en mm de maqueta."""
+    if poly.is_empty:
+        return False
+    minx, miny, maxx, maxy = poly.bounds
+    return (min(maxx - minx, maxy - miny) >= MIN_LADO_MM
+            and poly.area >= MIN_AREA_MM2)
+
+
 def _cortable(placa, cfg):
     """True si la placa, llevada a la escala pedida, se puede cortar de verdad."""
     g = placa['poly']
@@ -26,8 +35,109 @@ def _cortable(placa, cfg):
     return lado >= MIN_LADO_MM and g.area * cfg.a_mm * cfg.a_mm >= MIN_AREA_MM2
 
 
+# ------------------------------------------------- escaleras, muebles y demas
+RAZON_PLACA_SOL = 0.34        # el mismo corte que usa placas.py
+MIN_VOL_MM3 = 400.0           # mm3 de maqueta: menos que esto es una astilla
+MAX_LADO_MODELO = 0.35        # un cuerpo mas grande que esto NO es un mueble
+MAX_REBANADAS = 120           # por cuerpo: mas que esto no lo pega nadie
+
+
+def cuerpos_macizos(mesh, cfg, razon=RAZON_PLACA_SOL, min_vol_mm3=MIN_VOL_MM3,
+                    max_lado=MAX_LADO_MODELO):
+    """Los cuerpos que NO son lamina: escaleras, barandales, muebles, columnas.
+
+    placas.py los descarta con razon, porque no hay forma de sacarles una placa:
+    una escalera no es una superficie. Pero tirarlos deja la maqueta coja.
+
+    Se deja fuera lo que es demasiado grande para ser un mueble: muchos modelos
+    traen ademas el volumen macizo del edificio entero como un cuerpo mas (en la
+    casa Bauhaus, dos bloques del 53% y 56% del modelo). Laminar eso son 444
+    rebanadas de nada.
+    """
+    from placas import _soldar, _obb
+    m = _soldar(mesh)
+    cuerpos = m.split(only_watertight=False)
+    if len(cuerpos) <= 1:
+        cuerpos = [m]
+    v_min = min_vol_mm3 / (cfg.a_mm ** 3)          # a unidades del modelo
+    lado_tope = float(np.max(mesh.extents)) * max_lado
+    macizos = []
+    for c in cuerpos:
+        if len(c.faces) < 4 or c.area < 1e-9:
+            continue
+        try:
+            _, ext, _ = _obb(c)
+        except Exception:
+            continue
+        esp, _, largo = ext
+        if largo <= 1e-9 or esp / max(largo, 1e-9) <= razon:
+            continue                                # es lamina: ya la vio placas.py
+        if float(np.prod(ext)) < v_min:
+            continue
+        if largo > lado_tope:                       # es la masa del edificio
+            continue
+        macizos.append(c)
+    return macizos
+
+
+def rebanar_solidos(mesh, cfg, prefijo='S'):
+    """Una escalera no se corta: se LAMINA. Se rebana en horizontal cada espesor
+    de carton y se apilan las rebanadas, igual que el modo terreno.
+
+    Devuelve piezas con la misma forma que las del modo casa, para que entren al
+    mismo acomodo y a la misma guia.
+    """
+    from despiece import rebanar, armar_piezas, solidificar
+    macizos = cuerpos_macizos(mesh, cfg)
+    piezas, resumen = [], []
+    for k, c in enumerate(macizos, 1):
+        nombre = '%s%d' % (prefijo, k)
+        # Estos cuerpos casi nunca vienen cerrados (una escalera exportada son
+        # unas caras sueltas) y rebanar una malla abierta da curvas, no
+        # poligonos: cero capas. Se le cose faldon y fondo primero.
+        try:
+            cerrado = c if c.is_watertight else solidificar(c)
+            capas = rebanar(cerrado, cfg)
+        except Exception:
+            resumen.append((nombre, 0, 0.0, 'no se pudo rebanar'))
+            continue
+        if not capas:
+            resumen.append((nombre, 0, 0.0, 'no salieron capas'))
+            continue
+        if len(capas) > MAX_REBANADAS:
+            resumen.append((nombre, 0, 0.0,
+                            'pediria %d rebanadas, mas del tope de %d'
+                            % (len(capas), MAX_REBANADAS)))
+            continue
+        # sin vaciar: son piezas chicas, el hueco no ahorra y las debilita
+        crudas = armar_piezas(capas, vaciar=False)
+        # las rebanadas ya vienen en mm de maqueta: el mismo filtro de las placas.
+        # Arriba y abajo de un cuerpo inclinado salen astillas de un milimetro.
+        crudas = [pz for pz in crudas if _cortable_mm(pz['poly'])]
+        if not crudas:
+            resumen.append((nombre, 0, 0.0, 'todas las rebanadas quedan mas chicas '
+                                            'que %.0f mm' % MIN_LADO_MM))
+            continue
+        alto_mm = len(capas) * cfg.espesor_mm
+        for pz in crudas:
+            piezas.append({
+                'id': '%s-%s' % (nombre, pz['id']),
+                'tipo': 'macizo',
+                'poly': pz['poly'],
+                'guia': pz['guia'],
+                'z_real': pz['z_real'],
+                'espesor_real_cm': cfg.espesor_mm / 10.0,
+                'vanos': len(pz['poly'].interiors),
+                'dientes': 0,
+                'ranuras': 0,
+                'apilada': True,
+            })
+        resumen.append((nombre, len(crudas), alto_mm, ''))
+    return piezas, resumen
+
+
 def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
-                         piso=None):
+                         piso=None, laminar_macizos=False):
     """Devuelve (piezas_mm, info). Las piezas traen 'poly' en mm de maqueta."""
     # el espesor del carton llevado a unidades del modelo: lo necesita el camino
     # de superficies para saber que dos caras ya no caben separadas
@@ -103,6 +213,27 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
                                     holgura_modelo=HOLGURA_MM / cfg.a_mm)
         n_recortes, avisos_recorte = recortar_choques(placas, contactos, t_mod)
 
+    # Escaleras, barandales y muebles no son laminas y placas.py los descarta.
+    # Para maqueta la salida es laminarlos: rebanadas horizontales que se apilan.
+    piezas_macizas, resumen_macizos = [], []
+    if laminar_macizos:
+        piezas_macizas, resumen_macizos = rebanar_solidos(mesh, cfg)
+    else:
+        try:
+            n_mac = len(cuerpos_macizos(mesh, cfg))
+        except Exception:
+            n_mac = 0
+        if n_mac:
+            avisos_previos.append('el modelo trae %d cuerpo(s) macizo(s) (escaleras, '
+                                  'muebles, columnas) que no son lamina: corre con '
+                                  '--laminar-macizos para sacarlos en rebanadas' % n_mac)
+    for nombre_m, n_reb, alto, motivo in resumen_macizos:
+        if n_reb:
+            avisos_previos.append('%s va laminado: %d rebanadas, %.0f mm de alto'
+                                  % (nombre_m, n_reb, alto))
+        else:
+            avisos_previos.append('%s se ignora: %s' % (nombre_m, motivo))
+
     piezas = []
     for p in placas:
         g = aff.scale(p['poly'], cfg.a_mm, cfg.a_mm, origin=(0, 0))
@@ -130,8 +261,11 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
             'ranuras': p.get('n_ranuras', 0),
         })
 
+    piezas.extend(piezas_macizas)
+
     info = {
         'n_placas': len(placas),
+        'n_macizas': len(piezas_macizas),
         'incortables': incortables,
         'niveles': niveles,
         'fuera_por_tope': [p.get('id', '?') for p in fuera_por_tope],

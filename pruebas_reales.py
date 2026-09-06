@@ -23,6 +23,12 @@ CASOS = [
     ('engel_env', 'envolvente',
      MODELOS + '/ladybug/obj/engel-house/AngelHouse_Bauhaus-in-Israel.obj',
      100, 2, '600x900'),
+    ('engel_piso10', 'piso10',
+     MODELOS + '/ladybug/obj/engel-house/AngelHouse_Bauhaus-in-Israel.obj',
+     100, 2, '600x900'),
+    ('engel_macizos', 'macizos',
+     MODELOS + '/ladybug/obj/engel-house/AngelHouse_Bauhaus-in-Israel.obj',
+     100, 2, '600x900'),
     ('mainstreet', 'casa', MODELOS + '/ladybug/stl-samples/MainStreetPlace.stl',
      500, 2, '600x900'),
     ('urban', 'casa', MODELOS + '/ladybug/obj/urban_model_001/model.obj',
@@ -49,15 +55,21 @@ def main(filtro=None):
 
         t0 = time.time()
         salida = 'out_real/' + nombre
-        if modo in ('casa', 'envolvente'):
+        if modo in ('casa', 'envolvente', 'piso10', 'macizos'):
             args = ['cortar_casa.py', ruta, '--escala', str(escala),
                     '--espesor', str(espesor), '--hoja', hoja, '--salida', salida]
-            if modo == 'envolvente':
-                args.append('--solo-envolvente')
+            args += {'envolvente': ['--solo-envolvente'],
+                     'piso10': ['--piso', '10'],
+                     'macizos': ['--laminar-macizos']}.get(modo, [])
             cod, txt = correr(args)
             resumen = next((l for l in txt.splitlines() if l.startswith('placas ')), txt.strip()[:120])
-            if modo == 'envolvente':
+            if modo in ('envolvente', 'macizos'):
                 cod2, txt2, auditoria = 0, '', '(ensamble: se mide en el caso completo)'
+            elif modo == 'piso10':
+                cod2, txt2 = correr(['verificar_casa.py', ruta, str(escala),
+                                     '--espesor', str(espesor), '--piso', '10'])
+                auditoria = next((l for l in txt2.splitlines()
+                                  if l.startswith('PASA') or l.startswith('NO PASA')), '')
             else:
                 cod2, txt2 = correr(['verificar_casa.py', ruta, str(escala),
                                      '--espesor', str(espesor)])
