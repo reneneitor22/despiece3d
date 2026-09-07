@@ -121,8 +121,8 @@ modelo con materiales trae la tabla de colores incompleta — declara `red` y
 
 | archivo | para qué |
 |---|---|
-| `<modelo>_hojaNN.dxf` | lo que lee la máquina de corte; capas CORTE / GRABADO / HOJA |
-| `<modelo>_hojaNN.dwg` | lo mismo para las cabinas que sólo aceptan DWG (sólo sale con ODA File Converter; ver abajo) |
+| `<modelo>_hojaNN.dxf` | lo que lee la máquina de corte; una capa por operación + la tabla de corte |
+| `<modelo>_hojaNN.dwg` | lo mismo en DWG, que es lo que piden las cabinas de corte |
 | `<modelo>.pdf` | todas las hojas a tamaño real, para imprimir y cortar a mano |
 | `<modelo>_hojaNN.svg` | igual, para el navegador |
 | `<modelo>_guia.html` | vistas armada y explotada, tabla de piezas y avisos |
@@ -131,30 +131,72 @@ El PDF trae la hoja como **tamaño de página**, así que se manda a imprimir a
 escala 100% y las piezas miden lo que dicen. El SVG también imprime, pero el
 navegador lo reescala al papel y el corte sale a otra medida.
 
-### El DWG y por qué casi siempre no sale
+### Listo para mandar, sin abrir AutoCAD
 
-ezdxf no escribe DWG — es formato cerrado de Autodesk — así que hay que salir a
-una herramienta de afuera. Se intentan dos, en este orden:
+El archivo sale ya preparado para el taller. Lo que antes se hacía a mano en
+AutoCAD —pintar cada línea del color de su operación— viene hecho:
+
+- **Una capa por operación**, con nombre y color que se eligen en la pantalla
+  (*Cómo lo quiere tu taller*). Se escribe el **índice de color de AutoCAD** y el
+  **color verdadero (RGB)**: las cabinas viejas (RDWorks) mapean la operación por
+  índice y las nuevas (LightBurn) por RGB, así que con los dos puestos el archivo
+  cae bien en las dos. De fábrica: `CORTE` rojo, `GRABADO` azul, `MARCADO` verde.
+- **El número de pieza va en MARCADO**, aparte del grabado, para que el taller lo
+  pueda bajar de potencia o apagarlo sin tocar las huellas de ensamble.
+- **Marco** del tamaño de lámina elegido, para alinear el material.
+- **Tabla de corte** dentro del dibujo: proyecto, hoja, escala, material, espesor,
+  medida de hoja, kerf, piezas y la equivalencia capa → operación.
+
+El marco y la tabla van en la capa **HOJA**, que la cabina no tiene asignada a
+ninguna operación: se ven al abrir el plano pero no se cortan ni se graban. La
+tabla se dibuja **debajo del marco**, fuera del área de corte, para no comerse
+material.
+
+Todo eso también aplica al DXF, que es el que sí sale siempre.
+
+### El DWG, y el bug que lo tuvo muerto meses
+
+Las cabinas de corte piden DWG. ezdxf no lo escribe — es formato cerrado de
+Autodesk — así que hay que salir a una herramienta de afuera:
 
 1. **ODA File Converter** (opendesign.com). Gratis, pero se baja a mano dando un
-   correo, así que no siempre está. Es el único que escribe DWG de verdad.
-2. **`dwgwrite` (LibreDWG 0.14)**, que se instala con brew… y **entrega un
-   archivo que AutoCAD abre en negro**.
+   correo. Escribe hasta ACAD2018.
+2. **`dwgwrite` (LibreDWG 0.14)**, que se instala con brew y sólo escribe r2000.
 
-Lo de LibreDWG, medido: **recorta todos los nombres a la primera letra**. Las
-capas CORTE / GRABADO / HOJA quedan como C / G / H — feo pero usable — y el
-bloque `*Model_Space` queda como `*`, que ya no es cosmético: las 1396 entidades
-quedan colgando de un bloque que ningún layout referencia. El archivo pesa 180
-KB, `dwgread` lo relee y hasta cuenta las 1106 polilíneas, pero el espacio
-modelo está vacío y `$EXTMIN` viene en el valor de "dibujo vacío", así que ni el
-Zoom Extents encuentra nada. Pasa igual con un archivo de tres polilíneas: no es
-el tamaño, es el escritor.
+Durante meses el camino 2 entregó un archivo que **AutoCAD abría en negro**:
+todos los nombres recortados a su primera letra — las capas `CORTE` / `GRABADO`
+/ `HOJA` en `C` / `G` / `H`, y el bloque `*Model_Space` en `*`, que ya no es
+cosmético: deja las entidades colgando de un bloque que ningún layout
+referencia, con `$EXTMIN` en el valor de "dibujo vacío". El archivo pesaba,
+`dwgread` lo releía y hasta contaba las polilíneas.
 
-De ahí la regla que quedó cableada: **el DWG se verifica abriéndolo y contando
-lo que hay en el espacio modelo**, no buscando palabras en un volcado de texto.
-Esa cuenta de texto es justamente la que dejó pasar un DWG muerto hasta las
-manos de un arquitecto. Si la verificación falla, el archivo se borra y se avisa
-— nadie se entera de que el DWG está vacío estando frente a la máquina.
+No era el tamaño ni el escritor: era **la versión del DXF de entrada**. De R2007
+en adelante el DXF guarda los nombres en UTF-8, y LibreDWG los relee como si
+fueran de dos bytes, se topa con el NUL y corta ahí. Medido, con el mismo
+dibujo:
+
+| DXF de entrada | capas en el DWG |
+|---|---|
+| R2000, R2004 | `0 Defpoints CORTE GRABADO HOJA` ✅ |
+| R2010, R2013, R2018 | `0 D C G H` ❌ |
+
+De ahí que `hoja_a_dxf` escriba **R2004**: es la versión más vieja que todavía
+guarda color verdadero (RGB) en la capa. Con eso el DWG sale completo — medido
+en la casa Bauhaus, 500 entidades y las cuatro capas idénticas entre el DXF y el
+DWG. **Si algún día se cambia esa versión, el DWG se rompe en silencio**; lo
+único que lo caza es la verificación de abajo.
+
+Lo que sí se pierde por este camino: el **color verdadero (RGB)** de las capas,
+porque el DWG r2000 es anterior a él. Queda el índice de color de AutoCAD, que
+es exacto para la convención normal (rojo 1, azul 5, verde 3) y es lo único que
+miran las cabinas viejas. El DXF que va en el mismo zip lleva los dos.
+
+De todo esto quedó cableada una regla: **el DWG se verifica abriéndolo y
+contando lo que hay en el espacio modelo**, no buscando palabras en un volcado
+de texto. Esa cuenta de texto es justamente la que dejó pasar un DWG muerto
+hasta las manos de un arquitecto. Si la verificación falla, el archivo se borra
+y se avisa en pantalla — nadie se entera de que el DWG está vacío estando frente
+a la máquina.
 
 ## La cuenta que hay que tener clara
 
@@ -168,6 +210,24 @@ d = (t/2) · (1 + cos θ) / sen θ
 No `(t/2)/sen θ`: eso sólo vale para el plano medio e ignora el material que queda
 fuera de él. Con el techo a 28° del muro, la diferencia son 0.05 mm de interferencia
 por pieza — poco, pero se acumula y la maqueta no cierra.
+
+## Debug
+
+Correa de trazas por etapa: tiempo, tamaños, conteos y errores de toda la ruta
+—recepción del multipart, parseo, escritura a disco, y cada paso del despiece—.
+
+- Apagada por omisión. Se prende con `DESPIECE_DEBUG=1` en el entorno, o con
+  `?debug=1` en la URL (botón «mostrar debug» bajo el botón de generar).
+- Con `?debug=1` la página muestra un panel: tamaño del archivo, barra de subida,
+  tiempos, status HTTP, respuesta cruda y enlace al log del servidor.
+- Cada trabajo escribe `debug.log` (una línea JSON por evento) en su carpeta; se
+  ve en `/r/<job>/debug.log` y va dentro del .zip.
+- Los errores se registran siempre, esté prendida o no.
+
+```bash
+DESPIECE_DEBUG=1 python3 app.py 3561     # todo a stderr y al debug.log de cada job
+python3 -m unittest test_dbg test_subida # pruebas de la correa
+```
 
 ## Verificar
 
