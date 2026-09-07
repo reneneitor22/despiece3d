@@ -54,6 +54,19 @@ def hoja_a_dxf(colocadas, cfg, ruta, titulo):
 
     msp.add_text(titulo, dxfattribs={'layer': CAPA_HOJA, 'height': 6}
                  ).set_placement((cfg.margen_mm, H - cfg.margen_mm + 1))
+
+    # Sin esto el archivo abre en un zoom cualquiera y el operador puede ver una
+    # pantalla vacia hasta que se le ocurre hacer Zoom Extents. Lo que enmarca
+    # la vista al abrir es el viewport *Active, no el encabezado: escribirle
+    # $EXTMIN/$EXTMAX a `doc.header` no sirve de nada porque ezdxf los reescribe
+    # al guardar --los deja en el centinela 1e20/-1e20 de "dibujo vacio"-- ya
+    # que quien lleva la cuenta de la extension real es el programa que abre el
+    # archivo, y AutoCAD la recalcula sola en el primer regen. Los limites de
+    # hoja si se pegan, pero puestos en el layout y no en el encabezado.
+    lay = doc.layouts.get('Model')
+    lay.dxf.limmin = (0.0, 0.0)
+    lay.dxf.limmax = (W, H)
+    doc.set_modelspace_vport(height=H * 1.06, center=(W / 2.0, H / 2.0))
     doc.saveas(ruta)
 
 
