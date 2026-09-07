@@ -122,7 +122,7 @@ modelo con materiales trae la tabla de colores incompleta — declara `red` y
 | archivo | para qué |
 |---|---|
 | `<modelo>_hojaNN.dxf` | lo que lee la máquina de corte; capas CORTE / GRABADO / HOJA |
-| `<modelo>_hojaNN.dwg` | lo mismo para las cabinas que sólo aceptan DWG |
+| `<modelo>_hojaNN.dwg` | lo mismo para las cabinas que sólo aceptan DWG (sólo sale con ODA File Converter; ver abajo) |
 | `<modelo>.pdf` | todas las hojas a tamaño real, para imprimir y cortar a mano |
 | `<modelo>_hojaNN.svg` | igual, para el navegador |
 | `<modelo>_guia.html` | vistas armada y explotada, tabla de piezas y avisos |
@@ -131,19 +131,30 @@ El PDF trae la hoja como **tamaño de página**, así que se manda a imprimir a
 escala 100% y las piezas miden lo que dicen. El SVG también imprime, pero el
 navegador lo reescala al papel y el corte sale a otra medida.
 
-Dos cosas de `dwgwrite` (LibreDWG 0.14) que se descubrieron midiendo y por eso
-están cableadas:
+### El DWG y por qué casi siempre no sale
 
-* **Hay que pedirle la versión.** Sin `--as r2000` dice `SUCCESS` y entrega un
-  DWG con 2 polilíneas de las 1106: se traga la geometría sin un solo error.
-  Por eso, después de convertir, el programa **relee el DWG y cuenta las
-  polilíneas**; si faltan, borra el archivo en vez de entregar un DWG vacío que
-  nadie revisa hasta estar frente a la máquina.
-* **Recorta el nombre de las capas a la primera letra**, en todas las versiones
-  que acepta (r14 a r2018). CORTE / GRABADO / HOJA llegan a AutoCAD como
-  **C / G / H**. Siguen siendo tres capas distintas — que es lo que necesita el
-  operador para separar corte de grabado — pero no se llaman igual. Si el taller
-  exige los nombres completos, el DXF los trae bien.
+ezdxf no escribe DWG — es formato cerrado de Autodesk — así que hay que salir a
+una herramienta de afuera. Se intentan dos, en este orden:
+
+1. **ODA File Converter** (opendesign.com). Gratis, pero se baja a mano dando un
+   correo, así que no siempre está. Es el único que escribe DWG de verdad.
+2. **`dwgwrite` (LibreDWG 0.14)**, que se instala con brew… y **entrega un
+   archivo que AutoCAD abre en negro**.
+
+Lo de LibreDWG, medido: **recorta todos los nombres a la primera letra**. Las
+capas CORTE / GRABADO / HOJA quedan como C / G / H — feo pero usable — y el
+bloque `*Model_Space` queda como `*`, que ya no es cosmético: las 1396 entidades
+quedan colgando de un bloque que ningún layout referencia. El archivo pesa 180
+KB, `dwgread` lo relee y hasta cuenta las 1106 polilíneas, pero el espacio
+modelo está vacío y `$EXTMIN` viene en el valor de "dibujo vacío", así que ni el
+Zoom Extents encuentra nada. Pasa igual con un archivo de tres polilíneas: no es
+el tamaño, es el escritor.
+
+De ahí la regla que quedó cableada: **el DWG se verifica abriéndolo y contando
+lo que hay en el espacio modelo**, no buscando palabras en un volcado de texto.
+Esa cuenta de texto es justamente la que dejó pasar un DWG muerto hasta las
+manos de un arquitecto. Si la verificación falla, el archivo se borra y se avisa
+— nadie se entera de que el DWG está vacío estando frente a la máquina.
 
 ## La cuenta que hay que tener clara
 

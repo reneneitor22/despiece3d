@@ -330,93 +330,153 @@ def hojas_a_pdf(hojas, cfg, ruta, titulo_base):
 
 
 # ------------------------------------------------------------------- DWG
-def dxf_a_dwg(ruta_dxf, ruta_dwg=None, verificar=True):
-    """Convierte el DXF a DWG con dwgwrite (LibreDWG).
+def _oda_convertidor():
+    """Ruta del ODA File Converter, si esta instalado.
 
-    Casi toda maquina de corte lee DXF, pero varias cabinas traen AutoCAD y
-    piden DWG. ezdxf no escribe DWG -- es formato cerrado de Autodesk -- asi
-    que se pasa por LibreDWG, que es libre y se instala con
-    `brew install libredwg`.
-
-    Dos cosas medidas de LibreDWG 0.14, no supuestas:
-
-    * **Hay que pedirle la version.** Sin `--as`, `dwgwrite` dice SUCCESS y
-      entrega un DWG con 2 polilineas de las 1106: se traga la geometria sin
-      un solo error. Con `--as r2000` salen las 1106 y los 292 textos.
-    * **Recorta el nombre de las capas a la primera letra**, en todas las
-      versiones que acepta (r14 a r2018). CORTE/GRABADO/HOJA llegan a AutoCAD
-      como C/G/H. Siguen siendo tres capas distintas -- que es lo que necesita
-      el operador para separar corte de grabado -- pero no se llaman igual.
-
-    Por eso al final se relee el DWG y se cuentan las entidades: si se
-    perdieron, se borra el archivo en vez de entregar un DWG vacio que nadie
-    revisa hasta que esta frente a la maquina.
-
-    Devuelve (ruta_dwg, None) o (None, aviso). El DXF que ya se genero sigue
-    siendo la salida buena: el DWG es un extra.
+    Es gratuito (opendesign.com) pero se baja a mano dando un correo, asi que
+    no se puede dar por hecho. Es el unico que escribe DWG de verdad.
     """
+    import glob
+    import shutil
+
+    exe = shutil.which('ODAFileConverter')
+    if exe:
+        return exe
+    for patron in ('/Applications/ODAFileConverter*.app/Contents/MacOS/ODAFileConverter',
+                   '/Applications/ODA/ODAFileConverter*/ODAFileConverter'):
+        hallados = sorted(glob.glob(patron))
+        if hallados:
+            return hallados[-1]
+    return None
+
+
+def _con_oda(exe, ruta_dxf, ruta_dwg):
+    """ODAFileConverter trabaja por carpetas, no por archivo suelto."""
     import shutil
     import subprocess
     import tempfile
 
+    entrada = tempfile.mkdtemp(prefix='oda_in_')
+    salida = tempfile.mkdtemp(prefix='oda_out_')
+    try:
+        copia = os.path.join(entrada, os.path.basename(ruta_dxf))
+        shutil.copy2(ruta_dxf, copia)
+        subprocess.run([exe, entrada, salida, 'ACAD2018', 'DWG', '0', '1', '*.DXF'],
+                       capture_output=True, timeout=600)
+        hecho = os.path.join(salida, os.path.splitext(os.path.basename(ruta_dxf))[0] + '.dwg')
+        if not os.path.exists(hecho):
+            return None, 'ODAFileConverter no dejo salida para %s' % os.path.basename(ruta_dxf)
+        shutil.move(hecho, ruta_dwg)
+        return ruta_dwg, None
+    except Exception as e:
+        return None, 'ODAFileConverter fallo: %s' % e
+    finally:
+        shutil.rmtree(entrada, ignore_errors=True)
+        shutil.rmtree(salida, ignore_errors=True)
+
+
+AVISO_SIN_DWG = (
+    'no se pudo escribir DWG. Usa el DXF: AutoCAD lo abre igual y toda maquina\n'
+    '   de corte lo lee. Si el taller exige DWG de verdad, instala el ODA File\n'
+    '   Converter (gratis, opendesign.com/guestfiles/oda_file_converter) y vuelve\n'
+    '   a correr esto: se detecta solo.')
+
+
+def dxf_a_dwg(ruta_dxf, ruta_dwg=None, verificar=True):
+    """Convierte el DXF a DWG, si hay con que.
+
+    ezdxf no escribe DWG -- es formato cerrado de Autodesk -- asi que hay que
+    salir a una herramienta de afuera. Se intentan dos, en este orden:
+
+    1. **ODA File Converter**, que escribe DWG de verdad. Es gratis pero se baja
+       a mano, asi que no siempre esta.
+    2. **dwgwrite (LibreDWG)**, que se instala con brew... y que en la version
+       0.14 entrega un archivo que AutoCAD abre EN NEGRO. Medido: recorta todos
+       los nombres a la primera letra --las capas CORTE/GRABADO/HOJA quedan como
+       C/G/H, y el bloque `*Model_Space` queda como `*`-- asi que las 1396
+       entidades quedan colgando de un bloque que ningun layout referencia. El
+       archivo pesa, `dwgread` lo relee y hasta cuenta las 1106 polilineas, pero
+       el espacio modelo esta vacio y $EXTMIN viene en el valor de "dibujo
+       vacio". Pasa igual con un archivo de tres polilineas, o sea que no es el
+       tamaño. Por eso el resultado SE VERIFICA abriendo el DWG y contando lo
+       que hay en el espacio modelo, no buscando palabras en un volcado de
+       texto: esa cuenta de texto es la que dejo pasar un DWG muerto.
+
+    Devuelve (ruta_dwg, None) o (None, aviso). El DXF es la salida buena.
+    """
+    import shutil
+    import subprocess
+
     if ruta_dwg is None:
         ruta_dwg = os.path.splitext(ruta_dxf)[0] + '.dwg'
 
+    oda = _oda_convertidor()
+    if oda:
+        hecho, err = _con_oda(oda, ruta_dxf, ruta_dwg)
+        if hecho and not (verificar and _dwg_vacio(ruta_dwg)):
+            return hecho, None
+        if hecho:
+            os.remove(ruta_dwg)
+        return None, err or AVISO_SIN_DWG
+
     exe = shutil.which('dwgwrite')
     if not exe:
-        return None, ('para sacar DWG falta LibreDWG:  brew install libredwg\n'
-                      '   (el DXF ya sirve en casi toda maquina de corte)')
+        return None, AVISO_SIN_DWG
     try:
         r = subprocess.run([exe, '--as', 'r2000', '-o', ruta_dwg, ruta_dxf],
                            capture_output=True, timeout=300)
     except Exception as e:
         return None, 'dwgwrite fallo: %s' % e
     if r.returncode != 0 or not os.path.exists(ruta_dwg):
-        return None, ('dwgwrite no pudo convertir %s: %s'
-                      % (os.path.basename(ruta_dxf),
-                         (r.stderr or b'').decode('utf-8', 'replace').strip()[:200]))
+        return None, AVISO_SIN_DWG
 
     if verificar:
-        faltan = _dwg_perdio_geometria(ruta_dxf, ruta_dwg)
-        if faltan:
+        falla = _dwg_vacio(ruta_dwg)
+        if falla:
             os.remove(ruta_dwg)
-            return None, ('el DWG salio incompleto (%s) y se borro; usa el DXF: %s'
-                          % (faltan, os.path.basename(ruta_dxf)))
+            return None, '%s\n   (%s)' % (AVISO_SIN_DWG, falla)
     return ruta_dwg, None
 
 
-def _dwg_perdio_geometria(ruta_dxf, ruta_dwg):
-    """Relee el DWG y compara sus polilineas contra las del DXF de origen.
+def _dwg_vacio(ruta_dwg):
+    """¿El DWG abre sin nada dibujado? Devuelve el motivo, o None si trae obra.
 
-    Devuelve None si esta completo, o un texto con lo que falta. Si no se puede
-    releer (no hay dwgread), devuelve None: no se castiga al archivo por no
-    tener con que revisarlo.
+    Se relee el DWG a DXF y se cuenta lo que hay EN EL ESPACIO MODELO, que es lo
+    unico que el operador va a ver. Contar la palabra LWPOLYLINE en el texto no
+    sirve: un DWG con el bloque roto trae las 1106 y aun asi abre en negro.
     """
     import shutil
     import subprocess
     import tempfile
+    import warnings
 
     lector = shutil.which('dwgread')
     if not lector:
-        return None
+        return None                      # sin con que revisar, no se condena
 
-    def n_polilineas(ruta):
-        n = 0
-        with open(ruta, 'r', errors='replace') as f:
-            for linea in f:
-                if linea.strip() == 'LWPOLYLINE':
-                    n += 1
-        return n
-
-    esperadas = n_polilineas(ruta_dxf)
-    if esperadas == 0:
-        return None
     tmp = tempfile.NamedTemporaryFile(suffix='.dxf', delete=False)
     tmp.close()
     try:
         subprocess.run([lector, '-O', 'DXF', '-o', tmp.name, ruta_dwg],
                        capture_output=True, timeout=300)
-        salieron = n_polilineas(tmp.name)
+        import logging
+        import ezdxf
+        # ezdxf grita por el bitacora ("non-unique entity handle") cuando relee
+        # lo que escribio LibreDWG; aqui eso ya es el resultado esperado, no
+        # algo que el usuario tenga que ver.
+        ruido = logging.getLogger('ezdxf')
+        antes = ruido.level
+        ruido.setLevel(logging.CRITICAL)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                doc = ezdxf.readfile(tmp.name)
+        finally:
+            ruido.setLevel(antes)
+        n = sum(1 for _ in doc.modelspace())
+        if n == 0:
+            return 'el espacio modelo quedo vacio'
+        return None
     except Exception:
         return None
     finally:
@@ -424,8 +484,3 @@ def _dwg_perdio_geometria(ruta_dxf, ruta_dwg):
             os.remove(tmp.name)
         except OSError:
             pass
-    # El DXF de vuelta trae la palabra tambien en la tabla de clases, por eso
-    # se compara con holgura en vez de exigir el numero exacto.
-    if salieron < esperadas * 0.98:
-        return 'quedaron %d de %d polilineas' % (salieron, esperadas)
-    return None
