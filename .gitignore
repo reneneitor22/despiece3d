@@ -5,3 +5,6 @@ modelos_prueba/*.zip
 modelos_prueba/
 out_real/
 pruebas/
+
+.cache_skp/
+out_merida*/

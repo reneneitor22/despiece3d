@@ -667,7 +667,8 @@ def nombrar(placas):
 
 if __name__ == '__main__':
     import sys
-    m = trimesh.load(sys.argv[1] if len(sys.argv) > 1 else 'out/casa_prueba.stl', force='mesh')
+    from despiece import cargar_modelo
+    m = cargar_modelo(sys.argv[1] if len(sys.argv) > 1 else 'out/casa_prueba.stl')
     placas, desc = extraer_placas(m)
     nombrar(placas)
     print('cuerpos separados: %d | placas: %d | descartados: %d'

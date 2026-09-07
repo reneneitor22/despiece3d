@@ -46,7 +46,9 @@ def cargar_modelo(ruta):
 
     Un alumno baja lo que sea: la pagina de error del sitio guardada con
     extension .glb, un .zip sin descomprimir, un STL a medio bajar. Lo que no
-    puede es toparse con un traceback de trimesh.
+    puede es toparse con un traceback de trimesh. El .skp de SketchUp y el
+    .fbx de Autodesk se desvian a su propio lector: trimesh no sabe ni que
+    existen.
     """
     import os
     import trimesh
@@ -55,6 +57,18 @@ def cargar_modelo(ruta):
         raise SystemExit('no existe el archivo: %s' % ruta)
     if os.path.getsize(ruta) < 64:
         raise SystemExit('el archivo esta vacio o se bajo a medias: %s' % ruta)
+
+    import skp as _skp
+    if _skp.es_skp(ruta):
+        # El .skp no lo lee trimesh: tiene lector propio, que ademas lo entrega
+        # en metros y con Z arriba (ver skp.py).
+        return _skp.cargar_skp(ruta)
+
+    import fbx as _fbx
+    if _fbx.es_fbx(ruta):
+        # Igual el .fbx, que ademas trae anotado su eje de arriba y su unidad
+        # (ver fbx.py).
+        return _fbx.cargar_fbx(ruta)
 
     cabeza = open(ruta, 'rb').read(400).lstrip()
     if cabeza[:1] == b'<' or b'<!DOCTYPE html' in cabeza or b'<html' in cabeza:
@@ -69,7 +83,7 @@ def cargar_modelo(ruta):
         m = trimesh.load(ruta, force='mesh')
     except Exception as e:
         raise SystemExit('no se pudo leer %s (%s). Formatos que si lee: '
-                         'STL, OBJ, PLY, GLB, DAE.' % (ruta, e))
+                         'STL, OBJ, PLY, GLB, DAE, SKP, FBX.' % (ruta, e))
     if m is None or m.is_empty or len(m.faces) == 0:
         raise SystemExit('el archivo se leyo pero no trae geometria: %s' % ruta)
     return m

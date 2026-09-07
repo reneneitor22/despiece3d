@@ -24,6 +24,8 @@ ap.add_argument('--pisos', action='store_true',
                 help='listar los niveles de losa que trae el modelo y salir')
 ap.add_argument('--laminar-macizos', action='store_true',
                 help='escaleras, muebles y columnas en rebanadas que se apilan')
+ap.add_argument('--sin-dwg', action='store_true',
+                help='no convertir los DXF a DWG (mas rapido)')
 a = ap.parse_args()
 w, h = [float(v) for v in a.hoja.lower().split('x')]
 cfg = Config(a.escala, a.espesor, a.kerf, (w, h), unidades_modelo=a.unidades)
@@ -55,14 +57,24 @@ piezas, partidas = partir_grandes(piezas, cfg, rotaciones=ROTACIONES_ORTO)
 hojas, grandes = acomodar(piezas, cfg, rotaciones=ROTACIONES_ORTO)
 os.makedirs(a.salida, exist_ok=True)
 nombre = os.path.splitext(os.path.basename(a.modelo))[0]
-svgs, area = [], 0.0
+svgs, area, dxfs = [], 0.0, []
 for i, col in enumerate(hojas):
     tit = '%s  hoja %d/%d  1:%d  lamina %.1fmm' % (nombre, i + 1, len(hojas),
                                                    int(a.escala), a.espesor)
-    exportar.hoja_a_dxf(col, cfg, os.path.join(a.salida, '%s_hoja%02d.dxf' % (nombre, i + 1)), tit)
+    dxf = os.path.join(a.salida, '%s_hoja%02d.dxf' % (nombre, i + 1))
+    exportar.hoja_a_dxf(col, cfg, dxf, tit); dxfs.append(dxf)
     svg = exportar.hoja_a_svg(col, cfg, tit); svgs.append(svg)
     open(os.path.join(a.salida, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w').write(svg)
     area += sum(c['geo'].area for c in col)
+
+exportar.hojas_a_pdf(hojas, cfg, os.path.join(a.salida, '%s.pdf' % nombre),
+                     '%s  1:%d  lamina %.1fmm' % (nombre, int(a.escala), a.espesor))
+if not a.sin_dwg:
+    for dxf in dxfs:
+        _dwg, _err = exportar.dxf_a_dwg(dxf)
+        if _err:
+            print('   ' + _err)
+            break
 
 for p in piezas:
     p.setdefault('hoja', 0)

@@ -1,7 +1,10 @@
 # Despiece 3D
 
 Convierte un modelo 3D en piezas planas cortables, numeradas y acomodadas en hojas.
-Salida: **DXF** (corte láser) y **SVG/HTML** (imprimir y cortar a mano).
+Salida: **DXF** y **DWG** (corte láser), **PDF** a tamaño real y **SVG/HTML**
+(imprimir y cortar a mano).
+
+Lee STL, OBJ, PLY, GLB, DAE, **SKP** (SketchUp) y **FBX** (Autodesk).
 
 ```bash
 cd ~/Desktop/Claude/despiece3d
@@ -64,6 +67,84 @@ material y abre hueco donde el acomodo mete las piezas chicas.
 python3 cortar.py terreno.stl --escala 500 --espesor 3 --hoja 500x700
 ```
 
+## Los dos formatos que no lee ninguna librería de mallas
+
+Un alumno no exporta STL: entrega el archivo de su programa. Los dos que llegan
+son SKP y FBX, y trimesh no sabe que existen. Cada uno tiene su lector aparte
+(`skp.py`, `fbx.py`) y los dos entregan lo mismo: **metros y Z arriba**, que es
+lo único que el resto del programa entiende.
+
+### SKP (SketchUp)
+
+Formato cerrado. El SDK oficial de Trimble pide cuenta de desarrollador y
+compilar contra un framework de C: no es algo que un alumno instale. Se usa
+[`openskp`](https://pypi.org/project/openskp/), un lector hecho por ingeniería
+inversa que se instala con pip y abre los dos contenedores que existen — VFF
+(2021 en adelante) y el CArchive de MFC (2013-2020).
+
+Dos conversiones a la salida, y ninguna es cosmética:
+
+* **Ejes.** `openskp` entrega Y arriba (convención glTF). Con Y arriba, cada
+  muro se clasifica como losa — `placas.py` decide muro o losa por la
+  componente Z de la normal — y la casa sale en rebanadas horizontales.
+* **Unidades.** SketchUp guarda todo en pulgadas por dentro sin importar lo que
+  diga la regla en pantalla. `openskp` ya lo pasa a metros; la unidad que trae
+  el archivo (`Inches`) es nomás cómo se le enseña al usuario y **no** se debe
+  usar para escalar.
+
+Parsear y hornear una casa completa toma ~15 s y el CLI lo haría en cada
+corrida, así que la malla convertida se guarda en `.cache_skp/` con la firma del
+archivo (tamaño + fecha) en el nombre: si se vuelve a exportar desde SketchUp,
+la firma cambia y se relee solo.
+
+### FBX (Autodesk)
+
+La conversión la hace `assimp`. Lo que hace y lo que no está **medido**, no
+supuesto — `prueba_fbx.py` lo vuelve a comprobar en cualquier máquina:
+
+* **El eje de arriba lo arregla assimp.** Con cabecera de 3ds Max (Z arriba)
+  una caja de 4 × 2 × 10 sale de assimp como 4 × 10 × 2: la giró. Con cabecera
+  Y arriba la deja igual. O sea que la salida **siempre viene Y arriba**, y de
+  ahí se pasa a Z arriba. Ojo: no sirve leer `UpAxis` y rotar por cuenta propia,
+  porque assimp ya rotó.
+* **La unidad NO la toca.** Una caja de 400 × 1000 × 200 con `UnitScaleFactor`
+  = 1 (centímetros) sale con esos mismos números. Ese campo dice cuántos
+  centímetros mide una unidad del archivo: 1 son centímetros (lo normal saliendo
+  de Max), 100 metros, 2.54 pulgadas. Sin aplicarlo, una casa de 10 m entra como
+  si midiera 10 cm y no queda ni una placa cortable.
+
+El paso intermedio va en STL y no en PLY: el PLY que escribe assimp para un
+modelo con materiales trae la tabla de colores incompleta — declara `red` y
+`green` sin `blue` — y trimesh truena con `KeyError: 'blue'`.
+
+## Las salidas
+
+| archivo | para qué |
+|---|---|
+| `<modelo>_hojaNN.dxf` | lo que lee la máquina de corte; capas CORTE / GRABADO / HOJA |
+| `<modelo>_hojaNN.dwg` | lo mismo para las cabinas que sólo aceptan DWG |
+| `<modelo>.pdf` | todas las hojas a tamaño real, para imprimir y cortar a mano |
+| `<modelo>_hojaNN.svg` | igual, para el navegador |
+| `<modelo>_guia.html` | vistas armada y explotada, tabla de piezas y avisos |
+
+El PDF trae la hoja como **tamaño de página**, así que se manda a imprimir a
+escala 100% y las piezas miden lo que dicen. El SVG también imprime, pero el
+navegador lo reescala al papel y el corte sale a otra medida.
+
+Dos cosas de `dwgwrite` (LibreDWG 0.14) que se descubrieron midiendo y por eso
+están cableadas:
+
+* **Hay que pedirle la versión.** Sin `--as r2000` dice `SUCCESS` y entrega un
+  DWG con 2 polilíneas de las 1106: se traga la geometría sin un solo error.
+  Por eso, después de convertir, el programa **relee el DWG y cuenta las
+  polilíneas**; si faltan, borra el archivo en vez de entregar un DWG vacío que
+  nadie revisa hasta estar frente a la máquina.
+* **Recorta el nombre de las capas a la primera letra**, en todas las versiones
+  que acepta (r14 a r2018). CORTE / GRABADO / HOJA llegan a AutoCAD como
+  **C / G / H**. Siguen siendo tres capas distintas — que es lo que necesita el
+  operador para separar corte de grabado — pero no se llaman igual. Si el taller
+  exige los nombres completos, el DXF los trae bien.
+
 ## La cuenta que hay que tener clara
 
 La placa **no es una superficie, es una losa de espesor t**. Para librar el cartón de
@@ -83,6 +164,7 @@ por pieza — poco, pero se acumula y la maqueta no cierra.
 python3 gen_casa.py                       # casa de prueba con vanos, losa y techo
 python3 verificar_casa.py out/casa_prueba.stl 100   # prueba de ENSAMBLE en 3D
 python3 gen_terreno.py && python3 verificar.py      # nesting sin encimadas
+python3 prueba_fbx.py                     # que el FBX entre en metros y Z arriba
 
 # tambien con modelos de verdad
 python3 verificar_casa.py casa.obj 100 --espesor 2
@@ -118,16 +200,24 @@ Debajo del propio kerf del láser (0.15 mm), o sea: arma.
 | `estructura.py` | pipeline del modo casa + laminado de escaleras y muebles |
 | `despiece.py` | modo curvas + nesting por geometría real (raster + FFT) + partido de piezas que no caben |
 | `isometrica.py` | vistas armada y explotada |
-| `exportar.py` | DXF (capas CORTE / GRABADO / HOJA), SVG, guías HTML |
+| `exportar.py` | DXF (capas CORTE / GRABADO / HOJA), DWG, PDF, SVG, guías HTML |
 | `previsualizar.py` | rasteriza una hoja a PNG (revisar sin depender del navegador) |
 | `app.py` | servidor local + interfaz web |
+| `skp.py` / `fbx.py` | leer SketchUp y FBX: ejes, unidades y caché |
 | `verificar_casa.py` / `verificar.py` | auditorías |
 
 ## Dependencias
 
 ```bash
-pip3 install --user trimesh shapely ezdxf networkx scipy rtree pillow numpy rectpack
+pip3 install --user trimesh shapely ezdxf networkx scipy rtree pillow numpy rectpack \
+                    reportlab openskp
+brew install assimp libredwg          # solo para FBX y para el DWG
 ```
+
+`reportlab` es para el PDF, `openskp` para leer SketchUp, `assimp` para leer
+FBX y `libredwg` para escribir DWG. Sin los tres últimos el programa sigue
+sirviendo: avisa qué falta y entrega DXF, que es lo que lee casi toda máquina
+de corte.
 
 ## Modelos bajados de internet
 

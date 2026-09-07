@@ -30,15 +30,26 @@ def correr(ruta, cfg, salida, nombre=None):
     os.makedirs(salida, exist_ok=True)
     nombre = nombre or os.path.splitext(os.path.basename(ruta))[0]
     svgs, area_usada = [], 0.0
+    dxfs = []
     for i, colocadas in enumerate(hojas):
         titulo = '%s  hoja %d/%d  1:%d  lamina %.1fmm' % (nombre, i + 1, len(hojas),
                                                           int(cfg.escala), cfg.espesor_mm)
-        exportar.hoja_a_dxf(colocadas, cfg, os.path.join(salida, '%s_hoja%02d.dxf' % (nombre, i + 1)), titulo)
+        dxf = os.path.join(salida, '%s_hoja%02d.dxf' % (nombre, i + 1))
+        exportar.hoja_a_dxf(colocadas, cfg, dxf, titulo)
+        dxfs.append(dxf)
         svg = exportar.hoja_a_svg(colocadas, cfg, titulo)
         svgs.append(svg)
         open(os.path.join(salida, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w').write(svg)
         for col in colocadas:
             area_usada += col['geo'].area
+
+    exportar.hojas_a_pdf(hojas, cfg, os.path.join(salida, '%s.pdf' % nombre),
+                         '%s  1:%d  lamina %.1fmm' % (nombre, int(cfg.escala), cfg.espesor_mm))
+    for dxf in dxfs:
+        _dwg, _err = exportar.dxf_a_dwg(dxf)
+        if _err:
+            print('   ' + _err)
+            break
 
     for pz in piezas:
         pz['z_real_m'] = pz['z_real'] * {'m': 1.0, 'cm': 0.01, 'mm': 0.001}[cfg.unidades_modelo]

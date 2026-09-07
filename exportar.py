@@ -259,3 +259,173 @@ ol.pasos li{margin:4px 0}
                  n_uniones=info.get('n_uniones', 0), material=stats.get('material_cm2', 0),
                  avisos=avisos, iso_a=iso_armada, iso_e=iso_explotada,
                  filas=filas, laminas=laminas)
+
+
+# ------------------------------------------------------------------- PDF
+def hojas_a_pdf(hojas, cfg, ruta, titulo_base):
+    """Todas las hojas en un PDF vectorial, a tamaño real (1 mm de hoja = 1 mm).
+
+    El SVG ya sirve para imprimir, pero el navegador reescala al papel y el
+    corte sale a otra medida. El PDF trae la hoja como tamaño de pagina, asi
+    que se manda a imprimir "a escala 100%" y las piezas miden lo que dicen.
+
+    Colores como en el DXF: corte en rojo, grabado en azul punteado. Los
+    programas de laser que leen PDF (LightBurn, RDWorks) separan por color.
+    """
+    from reportlab.pdfgen import canvas as _canvas
+    from reportlab.lib.units import mm as MM
+
+    W, H = cfg.hoja
+    c = _canvas.Canvas(ruta, pagesize=(W * MM, H * MM))
+    c.setTitle(titulo_base)
+
+    for i, colocadas in enumerate(hojas):
+        c.setLineWidth(0.1 * MM)
+        c.setStrokeColorRGB(0.72, 0.72, 0.75)
+        c.rect(0, 0, W * MM, H * MM, stroke=1, fill=0)
+
+        for col in colocadas:
+            c.setStrokeColorRGB(0.88, 0.11, 0.28)          # corte
+            c.setDash()
+            for ext, ints in _anillos(col['geo']):
+                for anillo in [ext] + ints:
+                    p = c.beginPath()
+                    p.moveTo(anillo[0][0] * MM, anillo[0][1] * MM)
+                    for x, y in anillo[1:]:
+                        p.lineTo(x * MM, y * MM)
+                    p.close()
+                    c.drawPath(p, stroke=1, fill=0)
+
+            if col['guia'] is not None:
+                c.setStrokeColorRGB(0.15, 0.39, 0.92)      # grabado
+                c.setDash(2 * MM, 1.5 * MM)
+                for ext, ints in _anillos(col['guia']):
+                    for anillo in [ext] + ints:
+                        p = c.beginPath()
+                        p.moveTo(anillo[0][0] * MM, anillo[0][1] * MM)
+                        for x, y in anillo[1:]:
+                            p.lineTo(x * MM, y * MM)
+                        p.close()
+                        c.drawPath(p, stroke=1, fill=0)
+                c.setDash()
+
+            g = col['geo']
+            rp = g.representative_point()
+            alto = max(2.5, min(6.0, (g.bounds[2] - g.bounds[0]) / 8.0))
+            c.setFillColorRGB(0.07, 0.07, 0.09)
+            c.setFont('Helvetica', alto * MM)
+            # drawCentredString pone la linea base; se baja media altura para
+            # que el numero quede centrado en la pieza y no encima del borde.
+            c.drawCentredString(rp.x * MM, (rp.y * MM) - alto * MM * 0.36,
+                                str(col['pieza']['id']))
+
+        c.setFillColorRGB(0.42, 0.42, 0.45)
+        c.setFont('Helvetica', 4 * MM)
+        c.drawString(cfg.margen_mm * MM, (cfg.margen_mm - 4) * MM,
+                     '%s  hoja %d/%d' % (titulo_base, i + 1, len(hojas)))
+        c.showPage()
+
+    c.save()
+    return ruta
+
+
+# ------------------------------------------------------------------- DWG
+def dxf_a_dwg(ruta_dxf, ruta_dwg=None, verificar=True):
+    """Convierte el DXF a DWG con dwgwrite (LibreDWG).
+
+    Casi toda maquina de corte lee DXF, pero varias cabinas traen AutoCAD y
+    piden DWG. ezdxf no escribe DWG -- es formato cerrado de Autodesk -- asi
+    que se pasa por LibreDWG, que es libre y se instala con
+    `brew install libredwg`.
+
+    Dos cosas medidas de LibreDWG 0.14, no supuestas:
+
+    * **Hay que pedirle la version.** Sin `--as`, `dwgwrite` dice SUCCESS y
+      entrega un DWG con 2 polilineas de las 1106: se traga la geometria sin
+      un solo error. Con `--as r2000` salen las 1106 y los 292 textos.
+    * **Recorta el nombre de las capas a la primera letra**, en todas las
+      versiones que acepta (r14 a r2018). CORTE/GRABADO/HOJA llegan a AutoCAD
+      como C/G/H. Siguen siendo tres capas distintas -- que es lo que necesita
+      el operador para separar corte de grabado -- pero no se llaman igual.
+
+    Por eso al final se relee el DWG y se cuentan las entidades: si se
+    perdieron, se borra el archivo en vez de entregar un DWG vacio que nadie
+    revisa hasta que esta frente a la maquina.
+
+    Devuelve (ruta_dwg, None) o (None, aviso). El DXF que ya se genero sigue
+    siendo la salida buena: el DWG es un extra.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if ruta_dwg is None:
+        ruta_dwg = os.path.splitext(ruta_dxf)[0] + '.dwg'
+
+    exe = shutil.which('dwgwrite')
+    if not exe:
+        return None, ('para sacar DWG falta LibreDWG:  brew install libredwg\n'
+                      '   (el DXF ya sirve en casi toda maquina de corte)')
+    try:
+        r = subprocess.run([exe, '--as', 'r2000', '-o', ruta_dwg, ruta_dxf],
+                           capture_output=True, timeout=300)
+    except Exception as e:
+        return None, 'dwgwrite fallo: %s' % e
+    if r.returncode != 0 or not os.path.exists(ruta_dwg):
+        return None, ('dwgwrite no pudo convertir %s: %s'
+                      % (os.path.basename(ruta_dxf),
+                         (r.stderr or b'').decode('utf-8', 'replace').strip()[:200]))
+
+    if verificar:
+        faltan = _dwg_perdio_geometria(ruta_dxf, ruta_dwg)
+        if faltan:
+            os.remove(ruta_dwg)
+            return None, ('el DWG salio incompleto (%s) y se borro; usa el DXF: %s'
+                          % (faltan, os.path.basename(ruta_dxf)))
+    return ruta_dwg, None
+
+
+def _dwg_perdio_geometria(ruta_dxf, ruta_dwg):
+    """Relee el DWG y compara sus polilineas contra las del DXF de origen.
+
+    Devuelve None si esta completo, o un texto con lo que falta. Si no se puede
+    releer (no hay dwgread), devuelve None: no se castiga al archivo por no
+    tener con que revisarlo.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    lector = shutil.which('dwgread')
+    if not lector:
+        return None
+
+    def n_polilineas(ruta):
+        n = 0
+        with open(ruta, 'r', errors='replace') as f:
+            for linea in f:
+                if linea.strip() == 'LWPOLYLINE':
+                    n += 1
+        return n
+
+    esperadas = n_polilineas(ruta_dxf)
+    if esperadas == 0:
+        return None
+    tmp = tempfile.NamedTemporaryFile(suffix='.dxf', delete=False)
+    tmp.close()
+    try:
+        subprocess.run([lector, '-O', 'DXF', '-o', tmp.name, ruta_dwg],
+                       capture_output=True, timeout=300)
+        salieron = n_polilineas(tmp.name)
+    except Exception:
+        return None
+    finally:
+        try:
+            os.remove(tmp.name)
+        except OSError:
+            pass
+    # El DXF de vuelta trae la palabra tambien en la tabla de clases, por eso
+    # se compara con holgura en vez de exigir el numero exacto.
+    if salieron < esperadas * 0.98:
+        return 'quedaron %d de %d polilineas' % (salieron, esperadas)
+    return None

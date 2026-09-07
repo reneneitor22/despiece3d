@@ -8,7 +8,7 @@ sys.path.insert(0, BASE)
 JOBS = os.path.join(tempfile.gettempdir(), 'despiece3d_jobs')
 os.makedirs(JOBS, exist_ok=True)
 MAX = 120 * 1024 * 1024
-EXT_OK = {'.stl', '.obj', '.ply', '.glb', '.gltf', '.dae', '.off', '.3mf'}
+EXT_OK = {'.stl', '.obj', '.ply', '.glb', '.gltf', '.dae', '.off', '.3mf', '.skp', '.fbx'}
 
 MOD = os.path.join(BASE, 'modelos_prueba')
 # Ejemplos listos para probar sin buscar archivos. Los sinteticos siempre estan;
@@ -181,7 +181,7 @@ class H(BaseHTTPRequestHandler):
             ext = os.path.splitext(nombre_orig)[1].lower()
             if ext not in EXT_OK:
                 return self._send(400, 'application/json', json.dumps(
-                    {'error': 'formato %s no soportado. Exporta STL, OBJ, DAE, PLY o GLB.' % (ext or '?')}))
+                    {'error': 'formato %s no soportado. Lee STL, OBJ, DAE, PLY, GLB, SKP y FBX.' % (ext or '?')}))
 
             job = uuid.uuid4().hex[:12]
             carpeta = os.path.join(JOBS, job)
@@ -211,9 +211,22 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
     kerf = float(campos.get('kerf', 0.15) or 0)
     hw, hh = [float(v) for v in campos.get('hoja', '500x700').lower().split('x')]
 
-    m = trimesh.load(ruta_modelo, force='mesh')
+    from despiece import cargar_modelo
+    import skp as _skp
+    try:
+        m = cargar_modelo(ruta_modelo)
+    except SystemExit as e:
+        # cargar_modelo explica en castellano que paso; aqui eso va a la
+        # pantalla en vez de matar el hilo del trabajo.
+        return {'error': str(e)}
     if m.is_empty or len(m.faces) == 0:
         return {'error': 'el archivo no trae geometria legible'}
+    import fbx as _fbx
+    if _skp.es_skp(ruta_modelo) or _fbx.es_fbx(ruta_modelo):
+        # SketchUp guarda en pulgadas y el FBX trae su unidad anotada; los dos
+        # lectores ya entregan metros, asi que lo que haya escogido el usuario
+        # en el selector no aplica.
+        unidades = 'm'
 
     modo_escala = campos.get('modo_escala', 'escala')
     if modo_escala == 'largo':
@@ -247,16 +260,20 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
     if not hojas:
         return {'error': 'ninguna pieza cabe en la hoja. Sube la escala o usa hoja mas grande.'}
 
-    svgs, area_usada, urls = [], 0.0, []
+    svgs, area_usada, urls, dxfs = [], 0.0, [], []
     for i, colocadas in enumerate(hojas):
         titulo = '%s  hoja %d/%d  1:%d  lamina %.1fmm' % (nombre, i + 1, len(hojas), int(escala), espesor)
         dxf = os.path.join(carpeta, '%s_hoja%02d.dxf' % (nombre, i + 1))
         exportar.hoja_a_dxf(colocadas, cfg, dxf, titulo)
+        dxfs.append(dxf)
         svg = exportar.hoja_a_svg(colocadas, cfg, titulo)
         svgs.append(svg)
         open(os.path.join(carpeta, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w').write(svg)
         for col in colocadas:
             area_usada += col['geo'].area
+
+    _extras(hojas, cfg, carpeta, nombre, dxfs,
+            '%s  1:%d  lamina %.1fmm' % (nombre, int(escala), espesor))
 
     factor_m = {'m': 1.0, 'cm': 0.01, 'mm': 0.001}[unidades]
     for pz in piezas:
@@ -274,7 +291,7 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
     zip_path = os.path.join(carpeta, '%s_despiece.zip' % re.sub(r'[^\w\-]', '_', nombre))
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
         for f in sorted(os.listdir(carpeta)):
-            if f.endswith(('.dxf', '.svg')) or f == 'guia.html':
+            if f.endswith(('.dxf', '.dwg', '.pdf', '.svg')) or f == 'guia.html':
                 z.write(os.path.join(carpeta, f), f)
 
     return {'ok': True, 'job': job,
@@ -290,11 +307,27 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
             'stats': {k: round(v, 1) for k, v in stats.items()}}
 
 
+def _extras(hojas, cfg, carpeta, nombre, dxfs, titulo):
+    """PDF de todas las hojas y DWG de cada una, junto a los DXF que ya salieron.
+
+    El DWG puede no salir --depende de que este instalado LibreDWG-- y eso no
+    tumba el trabajo: el DXF es la salida buena y el aviso queda en la consola
+    del servidor.
+    """
+    import exportar
+    exportar.hojas_a_pdf(hojas, cfg, os.path.join(carpeta, '%s.pdf' % nombre), titulo)
+    for dxf in dxfs:
+        _dwg, err = exportar.dxf_a_dwg(dxf)
+        if err:
+            print('   ' + err)
+            break
+
+
 def _empacar(carpeta, nombre):
     zip_path = os.path.join(carpeta, '%s_despiece.zip' % re.sub(r'[^\w\-]', '_', nombre))
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
         for f in sorted(os.listdir(carpeta)):
-            if f.endswith(('.dxf', '.svg')) or f == 'guia.html':
+            if f.endswith(('.dxf', '.dwg', '.pdf', '.svg')) or f == 'guia.html':
                 z.write(os.path.join(carpeta, f), f)
     return zip_path
 
@@ -322,15 +355,20 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
     if not hojas:
         return {'error': 'ninguna pieza cabe en la hoja. Sube la escala o usa hoja mas grande.'}
 
-    svgs, area = [], 0.0
+    svgs, area, dxfs = [], 0.0, []
     for i, col in enumerate(hojas):
         tit = '%s  hoja %d/%d  1:%d  lamina %.1fmm' % (nombre, i + 1, len(hojas),
                                                        int(cfg.escala), cfg.espesor_mm)
-        exportar.hoja_a_dxf(col, cfg, os.path.join(carpeta, '%s_hoja%02d.dxf' % (nombre, i + 1)), tit)
+        dxf = os.path.join(carpeta, '%s_hoja%02d.dxf' % (nombre, i + 1))
+        exportar.hoja_a_dxf(col, cfg, dxf, tit)
+        dxfs.append(dxf)
         svg = exportar.hoja_a_svg(col, cfg, tit)
         svgs.append(svg)
         open(os.path.join(carpeta, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w').write(svg)
         area += sum(c['geo'].area for c in col)
+
+    _extras(hojas, cfg, carpeta, nombre, dxfs,
+            '%s  1:%d  lamina %.1fmm' % (nombre, int(cfg.escala), cfg.espesor_mm))
 
     for p in piezas:
         p.setdefault('hoja', 0)
@@ -459,8 +497,8 @@ button.go:disabled{opacity:.5;cursor:default}
   El modelo debe traer los muros con <b>espesor</b>, no como caras sueltas.</p>
  <div class="drop" id="drop">
   <b id="dropTxt">Arrastra tu modelo aquí</b>
-  <small>STL · OBJ · DAE · PLY · GLB — hasta 120 MB</small>
-  <input type="file" id="file" accept=".stl,.obj,.dae,.ply,.glb,.gltf,.off,.3mf" hidden>
+  <small>STL · OBJ · DAE · PLY · GLB · SKP · FBX — hasta 120 MB</small>
+  <input type="file" id="file" accept=".stl,.obj,.dae,.ply,.glb,.gltf,.off,.3mf,.skp,.fbx" hidden>
  </div>
 
  <div class="grid">
