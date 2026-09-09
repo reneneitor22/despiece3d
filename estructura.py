@@ -6,7 +6,8 @@ from shapely.geometry import Polygon, MultiPolygon
 import shapely.affinity as aff
 
 from placas import (extraer_placas, nombrar, marcar_envolvente,
-                    niveles_de_piso, cortar_por_piso)
+                    niveles_de_piso, cortar_por_piso, huellas_en_losas,
+                    asignar_planta)
 from uniones import detectar_contactos, aplicar_uniones, recortar_choques
 
 DIENTE_OBJ_MM = 12.0      # ancho buscado del diente, en mm de maqueta
@@ -136,8 +137,47 @@ def rebanar_solidos(mesh, cfg, prefijo='S'):
     return piezas, resumen
 
 
+PLANTA_BASTIDOR = 10 ** 6   # va al final de todo: se arma cuando ya hay maqueta
+
+
+def piezas_bastidor(mesh, cfg, alto_mm=15.0, margen_mm=8.0):
+    """La base con faldon donde se para la maqueta.
+
+    Cinco piezas: la tabla del tamano de la huella del modelo mas un margen, y
+    cuatro faldones a tope que la levantan. Los faldones cortos van MENOS dos
+    espesores porque entran entre los largos; si no, el bastidor sale un espesor
+    mas grande de cada lado y la tabla ya no le tapa el canto.
+    """
+    from shapely.geometry import box
+    b = mesh.bounds
+    t = float(cfg.espesor_mm)
+    W = (float(b[1][0]) - float(b[0][0])) * cfg.a_mm + 2 * margen_mm
+    D = (float(b[1][1]) - float(b[0][1])) * cfg.a_mm + 2 * margen_mm
+    if W < 20 or D < 20 or alto_mm <= 0:
+        return []
+
+    def pieza(idp, poly, guia=None):
+        return {'id': idp, 'tipo': 'bastidor', 'poly': poly, 'guia': guia,
+                'z_real': 0.0, 'espesor_real_cm': t / 10.0,
+                'vanos': 0, 'dientes': 0, 'ranuras': 0,
+                'planta': PLANTA_BASTIDOR, 'rotulo': 'BASTIDOR'}
+
+    # el rectangulo grabado en la tabla: donde cae la cara de adentro del faldon
+    tapa = box(0, 0, W, D)
+    guia = (tapa.difference(box(t, t, W - t, D - t))
+            if W > 4 * t and D > 4 * t else None)
+    salida = [pieza('BA1', tapa, guia)]
+    for k in (1, 2):
+        salida.append(pieza('BF%d' % k, box(0, 0, W, alto_mm)))
+    corto = max(10.0, D - 2 * t)
+    for k in (3, 4):
+        salida.append(pieza('BF%d' % k, box(0, 0, corto, alto_mm)))
+    return salida
+
+
 def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
-                         piso=None, laminar_macizos=False):
+                         piso=None, laminar_macizos=False, grabar_planta=True,
+                         bastidor_mm=0.0):
     """Devuelve (piezas_mm, info). Las piezas traen 'poly' en mm de maqueta."""
     # el espesor del carton llevado a unidades del modelo: lo necesita el camino
     # de superficies para saber que dos caras ya no caben separadas
@@ -234,6 +274,18 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
         else:
             avisos_previos.append('%s se ignora: %s' % (nombre_m, motivo))
 
+    # La planta de los muros grabada sobre su losa: sin esto la hoja es un monton
+    # de rectangulos anonimos y el alumno no sabe donde pega cada muro. Va
+    # despues de las uniones para que se sume a las marcas de ensamble, y
+    # despues de recortar_choques porque ese paso todavia mueve la geometria.
+    n_huellas = 0
+    if grabar_planta:
+        try:
+            n_huellas = huellas_en_losas(placas, t_min=t_mod)
+        except Exception as e:
+            avisos_previos.append('no se pudo grabar la planta en las losas: %s' % e)
+    asignar_planta(placas)
+
     piezas = []
     for p in placas:
         g = aff.scale(p['poly'], cfg.a_mm, cfg.a_mm, origin=(0, 0))
@@ -259,9 +311,29 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
             'vanos': p['vanos'],
             'dientes': p.get('n_dientes', 0),
             'ranuras': p.get('n_ranuras', 0),
+            'planta': p.get('planta', 1),
+            'rotulo': 'PLANTA %d' % p.get('planta', 1),
         })
 
+    # Las escaleras y muebles laminados tambien llevan planta, si no todos caen
+    # en la primera hoja y se revuelven con la planta baja.
+    for pz in piezas_macizas:
+        z = float(pz.get('z_real', 0.0))
+        k = 0
+        for i, nz in enumerate(niveles or []):
+            if z >= nz - 0.30:
+                k = i
+        pz['planta'] = k + 1
+        pz['rotulo'] = 'PLANTA %d' % pz['planta']
     piezas.extend(piezas_macizas)
+
+    # El bastidor va al final y en su propia zona: no es de ninguna planta y el
+    # alumno lo arma cuando la maqueta ya esta de pie.
+    n_bastidor = 0
+    if bastidor_mm and bastidor_mm > 0:
+        bs = piezas_bastidor(mesh, cfg, alto_mm=float(bastidor_mm))
+        piezas.extend(bs)
+        n_bastidor = len(bs)
 
     info = {
         'n_placas': len(placas),
@@ -271,6 +343,9 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
         'fuera_por_tope': [p.get('id', '?') for p in fuera_por_tope],
         'n_uniones': n_uniones,
         'n_recortes': n_recortes,
+        'n_huellas': n_huellas,
+        'n_bastidor': n_bastidor,
+        'n_plantas': max([p.get('planta', 1) for p in placas] or [1]),
         'avisos': avisos_previos + avisos_recorte,
         'descartados': descartados,
         'por_tipo': {t: sum(1 for p in placas if p['tipo'] == t)

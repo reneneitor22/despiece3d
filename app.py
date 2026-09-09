@@ -6,11 +6,33 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
 JOBS = os.path.join(tempfile.gettempdir(), 'despiece3d_jobs')
+
+# Etapa -> (que decir, cuanto llevamos). Los porcentajes no son un cronometro:
+# son EN QUE PASO va, que es lo unico que se puede prometer sin mentir. El
+# nombre de la etapa lo pone dbg.etapa() en el propio codigo que corre.
+PASOS = {
+    None: ('Preparando…', 2),
+    'recibir': ('Recibiendo el modelo', 6),
+    'parse': ('Leyendo la subida', 10),
+    'guardar': ('Guardando el modelo', 14),
+    'ejemplo.copiar': ('Copiando el ejemplo', 14),
+    'cargar_modelo': ('Abriendo el modelo', 20),
+    'solidificar': ('Cerrando la malla', 28),
+    'rebanar': ('Rebanando', 40),
+    'armar_piezas': ('Armando las piezas', 52),
+    'despiece_estructural': ('Sacando muros, losas y techos', 52),
+    'partir_grandes': ('Partiendo las que no caben en la hoja', 64),
+    'acomodar': ('Acomodando en las hojas', 76),
+    'export.hoja': ('Escribiendo las hojas', 86),
+    'export.extras': ('PDF, DWG y guía de armado', 94),
+    'listo': ('Listo', 100),
+}
 os.makedirs(JOBS, exist_ok=True)
 
 import dbg
 dbg.JOBS_DIR = JOBS
-MAX = 120 * 1024 * 1024
+MAX = 200 * 1024 * 1024
+MAX_MB = MAX // (1024 * 1024)   # el tope se escribe UNA vez: pantalla y error salen de aqui
 EXT_OK = {'.stl', '.obj', '.ply', '.glb', '.gltf', '.dae', '.off', '.3mf', '.skp', '.fbx'}
 
 MOD = os.path.join(BASE, 'modelos_prueba')
@@ -112,6 +134,18 @@ class H(BaseHTTPRequestHandler):
     def _query(self):
         return self.path.split('?', 1)[1] if '?' in self.path else ''
 
+    def _job_pedido(self):
+        """El id que mando el cliente en la query, o uno nuevo.
+
+        Va en la QUERY y no en el formulario a proposito: la carpeta del trabajo
+        se crea ANTES de leer el cuerpo (para que la subida entera quede en su
+        debug.log), asi que cuando el id viaja en el multipart ya es tarde. Con
+        el id de antemano la pantalla puede preguntar por el avance mientras el
+        POST sigue abierto.
+        """
+        m = re.search(r'(?:^|&)job=([a-f0-9]{12})(?:&|$)', self._query())
+        return m.group(1) if m else uuid.uuid4().hex[:12]
+
     def do_GET(self):
         dbg.set_request('debug=1' in self._query())
         try:
@@ -123,6 +157,15 @@ class H(BaseHTTPRequestHandler):
         ruta = self.path.split('?')[0]
         if ruta in ('/', '/index.html'):
             return self._send(200, 'text/html; charset=utf-8', PAGINA)
+        if ruta == '/progreso':
+            m = re.search(r'(?:^|&)job=([a-f0-9]{12})(?:&|$)', self._query())
+            e = dbg.progreso(m.group(1)) if m else None
+            paso, seg = (e[0], time.time() - e[1]) if e else (None, 0.0)
+            etiqueta, pct = PASOS.get(paso, ('Trabajando…', 50))
+            return self._send(200, 'application/json; charset=utf-8',
+                              json.dumps({'etapa': paso, 'texto': etiqueta,
+                                          'pct': pct, 'seg': round(seg, 1)},
+                                         ensure_ascii=False))
         if ruta == '/ejemplos':
             lista = [{'id': e['id'], 'titulo': e['titulo'], 'pie': e['pie']}
                      for e in ejemplos_disponibles()]
@@ -156,10 +199,11 @@ class H(BaseHTTPRequestHandler):
                 dbg.log('ejemplo.rechazo', nivel='error', id=pedido.get('id'))
                 return self._send(404, 'application/json; charset=utf-8',
                                   json.dumps({'error': 'ese ejemplo no esta en disco'}))
-            job = uuid.uuid4().hex[:12]
+            job = self._job_pedido()
             carpeta = os.path.join(JOBS, job)
             os.makedirs(carpeta, exist_ok=True)
             dbg.set_job(job)
+            dbg.marcar('recibir', job)
             ext = os.path.splitext(elegido['ruta'])[1].lower()
             destino = os.path.join(carpeta, 'modelo' + ext)
             with dbg.etapa('ejemplo.copiar', origen=elegido['ruta'], destino=destino):
@@ -167,6 +211,7 @@ class H(BaseHTTPRequestHandler):
             dbg.log('ejemplo.verif', bytes=os.path.getsize(destino))
             r = procesar(destino, dict(elegido['campos']), carpeta, job,
                          re.sub(r'[^A-Za-z0-9_-]+', '_', elegido['titulo']))
+            dbg.marcar('listo', job)
             if isinstance(r, dict) and job:
                 r.setdefault('job', job)
             return self._send(200, 'application/json; charset=utf-8',
@@ -204,7 +249,7 @@ class H(BaseHTTPRequestHandler):
             if n <= 0 or n > MAX:
                 dbg.log('recibir.rechazo', nivel='error', motivo='tamano', n=n, max=MAX)
                 return self._send(413, 'application/json',
-                                  json.dumps({'error': 'archivo vacio o mayor a 120 MB'}))
+                                  json.dumps({'error': 'archivo vacio o mayor a %d MB' % MAX_MB}))
             if not mb:
                 dbg.log('recibir.rechazo', nivel='error', motivo='sin_boundary')
                 return self._send(400, 'application/json', json.dumps({'error': 'peticion mal formada'}))
@@ -212,10 +257,11 @@ class H(BaseHTTPRequestHandler):
 
             # Carpeta del trabajo ya: asi la subida entera queda en su debug.log,
             # que es justo lo que hay que poder ver cuando una subida falla.
-            job = uuid.uuid4().hex[:12]
+            job = self._job_pedido()
             carpeta = os.path.join(JOBS, job)
             os.makedirs(carpeta, exist_ok=True)
             dbg.set_job(job)
+            dbg.marcar('recibir', job)
 
             leido, trozos, hito = 0, [], 4 << 20
             while leido < n:
@@ -251,6 +297,7 @@ class H(BaseHTTPRequestHandler):
                     bytes_en_disco=os.path.getsize(ruta_modelo))
             resultado = procesar(ruta_modelo, campos, carpeta, job,
                                  os.path.splitext(os.path.basename(nombre_orig))[0])
+            dbg.marcar('listo', job)
             if isinstance(resultado, dict) and job:
                 resultado.setdefault('job', job)
             return self._send(200, 'application/json; charset=utf-8',
@@ -295,22 +342,55 @@ def _convencion(campos):
 def _ficha(nombre, cfg, material, hoja_i, hojas_n, n_piezas):
     """Renglones de la tabla de corte que va dentro del DXF/DWG."""
     import datetime
-    return [
+    filas = [
         ('Proyecto', nombre),
         ('Hoja', '%d de %d' % (hoja_i, hojas_n)),
         ('Escala', '1:%d' % int(cfg.escala)),
         ('Material', material or 'sin especificar'),
         ('Espesor de lamina', '%.1f mm' % cfg.espesor_mm),
         ('Tamano de hoja', '%g x %g mm' % cfg.hoja),
-        ('Kerf compensado', '%.2f mm' % cfg.kerf_mm),
         ('Piezas en la hoja', str(n_piezas)),
         ('Fecha', datetime.date.today().isoformat()),
     ]
+    if cfg.kerf_mm:
+        filas.insert(6, ('Kerf compensado', '%.2f mm' % cfg.kerf_mm))
+    return filas
 
 
 def _material(campos):
     txt = (campos.get('material') or '').strip()
     return txt[:60] if txt else ''
+
+
+def _capa_hoja(campos):
+    return (campos.get('capa_hoja') or '').strip()[:60] or None
+
+
+def _notas(ops, material, cfg):
+    """Las dos lineas que lee el que opera la maquina, arriba del marco.
+
+    Copiado de como lo entrega un arquitecto a mano: "azul graba, rojo corta"
+    en texto pelado. La tabla de corte, abajo, es para cotizar; esto es para no
+    equivocarse de operacion.
+    """
+    import exportar
+    orden = [('corte', 'CORTA'), ('grabado', 'GRABA'), ('marcado', 'MARCA')]
+    legenda = '  ·  '.join(
+        '%s %s' % (exportar.nombre_color(ops[k]['rgb']).upper(), verbo)
+        for k, verbo in orden)
+    return [legenda,
+            '%s  ·  hoja %g x %g mm  ·  escala 1:%d'
+            % (material or 'material sin especificar', cfg.hoja[0], cfg.hoja[1],
+               int(cfg.escala))]
+
+
+def _cajetin(nombre, cfg, campos):
+    """Lo que se GRABA en una pieza: se queda en la maqueta armada."""
+    alumno = (campos.get('alumno') or '').strip()[:40]
+    lineas = [nombre.upper()[:40], 'ESCALA 1:%d' % int(cfg.escala)]
+    if alumno:
+        lineas.append(alumno.upper())
+    return lineas
 
 
 def procesar(ruta_modelo, campos, carpeta, job, nombre):
@@ -326,7 +406,10 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
 
     unidades = campos.get('unidades', 'm')
     espesor = float(campos.get('espesor', 3) or 3)
-    kerf = float(campos.get('kerf', 0.15) or 0)
+    # Sin compensacion de kerf. Irving: el taller ya la mete en su maquina, y
+    # dos compensaciones encimadas dejan la pieza floja. Se manda la medida
+    # real y el que corta decide.
+    kerf = float(campos.get('kerf', 0) or 0)
     hoja_txt = (campos.get('hoja') or '500x700').lower()
     if hoja_txt == 'otra':
         hoja_txt = '%sx%s' % (campos.get('hoja_w') or 500, campos.get('hoja_h') or 700)
@@ -410,6 +493,9 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
     material = _material(campos)
     con_tabla = campos.get('tabla', '1') not in ('0', 'false', '')
     con_marco = campos.get('marco', '1') not in ('0', 'false', '')
+    capa_hoja = _capa_hoja(campos)
+    notas = _notas(ops, material, cfg) if campos.get('notas', '1') not in ('0', 'false', '') else None
+    cajetin = _cajetin(nombre, cfg, campos) if campos.get('cajetin', '1') not in ('0', 'false', '') else None
 
     svgs, area_usada, urls, dxfs = [], 0.0, [], []
     for i, colocadas in enumerate(hojas):
@@ -418,8 +504,10 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
         with dbg.etapa('export.hoja', i=i + 1, piezas=len(colocadas)):
             exportar.hoja_a_dxf(colocadas, cfg, dxf, titulo, ops=ops, marco=con_marco,
                                 ficha=_ficha(nombre, cfg, material, i + 1, len(hojas),
-                                             len(colocadas)) if con_tabla else None)
-            svg = exportar.hoja_a_svg(colocadas, cfg, titulo)
+                                             len(colocadas)) if con_tabla else None,
+                                capa_hoja=capa_hoja, notas=notas, cajetin=cajetin)
+            svg = exportar.hoja_a_svg(colocadas, cfg, titulo, notas=notas,
+                                      cajetin=cajetin)
         dxfs.append(dxf)
         svgs.append(svg)
         open(os.path.join(carpeta, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w').write(svg)
@@ -517,13 +605,22 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
     con_uniones = campos.get('uniones', '1') not in ('0', 'false', '')
     envolvente = campos.get('envolvente', '0') in ('1', 'true', 'on')
     macizos = campos.get('macizos', '0') in ('1', 'true', 'on')
+    grabar_planta = campos.get('planta_grabada', '1') not in ('0', 'false', '')
+    try:
+        bastidor = float(campos.get('bastidor') or 0)
+    except ValueError:
+        bastidor = 0.0
+    bastidor = min(max(bastidor, 0.0), 120.0)
+    juntar = campos.get('juntar_plantas', '0') in ('1', 'true', 'on')
     piso = campos.get('piso', '').strip()
     piso = int(piso) if piso.isdigit() and int(piso) > 0 else None
     with dbg.etapa('despiece_estructural', uniones=con_uniones, envolvente=envolvente,
                    macizos=macizos, piso=piso):
         piezas, info = despiece_estructural(m, cfg, con_uniones=con_uniones,
                                             solo_envolvente=envolvente, piso=piso,
-                                            laminar_macizos=macizos)
+                                            laminar_macizos=macizos,
+                                            grabar_planta=grabar_planta,
+                                            bastidor_mm=bastidor)
     if 'error' in info:
         dbg.log('estructural.error', nivel='error', motivo=info['error'])
         return {'error': info['error']}
@@ -534,7 +631,8 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
     with dbg.etapa('partir_grandes'):
         piezas, partidas = partir_grandes(piezas, cfg, rotaciones=ROTACIONES_ORTO)
     with dbg.etapa('acomodar'):
-        hojas, grandes = acomodar(piezas, cfg, rotaciones=ROTACIONES_ORTO)
+        hojas, grandes = acomodar(piezas, cfg, rotaciones=ROTACIONES_ORTO,
+                                  agrupar=None if juntar else 'planta')
     dbg.log('acomodar.detalle', n_piezas=len(piezas), n_hojas=len(hojas), grandes=grandes)
     if not hojas:
         dbg.log('estructural.error', nivel='error', motivo='no_cabe')
@@ -544,17 +642,30 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
     material = _material(campos)
     con_tabla = campos.get('tabla', '1') not in ('0', 'false', '')
     con_marco = campos.get('marco', '1') not in ('0', 'false', '')
+    capa_hoja = _capa_hoja(campos)
+    notas = _notas(ops, material, cfg) if campos.get('notas', '1') not in ('0', 'false', '') else None
+    cajetin = _cajetin(nombre, cfg, campos) if campos.get('cajetin', '1') not in ('0', 'false', '') else None
 
+    n_plantas = info.get('n_plantas', 1)
     svgs, area, dxfs = [], 0.0, []
     for i, col in enumerate(hojas):
-        tit = '%s  hoja %d/%d  1:%d  lamina %.1fmm' % (nombre, i + 1, len(hojas),
-                                                       int(cfg.escala), cfg.espesor_mm)
+        zonas = sorted({c['pieza'].get('rotulo', 'PLANTA 1') for c in col})
+        plantas = sorted({c['pieza'].get('planta', 1) for c in col})
+        # La hoja dice de que zona es: es lo primero que busca quien arma, y con
+        # las plantas separadas cada hoja suele ser de una sola.
+        sello = '  %s' % zonas[0] if len(zonas) == 1 and not juntar else ''
+        tit = '%s  hoja %d/%d%s  1:%d  lamina %.1fmm' % (nombre, i + 1, len(hojas),
+                                                         sello, int(cfg.escala),
+                                                         cfg.espesor_mm)
         dxf = os.path.join(carpeta, '%s_hoja%02d.dxf' % (nombre, i + 1))
+        ficha = _ficha(nombre, cfg, material, i + 1, len(hojas), len(col))
+        if len(zonas) > 1 or n_plantas > 1:
+            ficha.insert(2, ('Zona', ', '.join(zonas)))
         exportar.hoja_a_dxf(col, cfg, dxf, tit, ops=ops, marco=con_marco,
-                            ficha=_ficha(nombre, cfg, material, i + 1, len(hojas),
-                                         len(col)) if con_tabla else None)
+                            ficha=ficha if con_tabla else None,
+                            capa_hoja=capa_hoja, notas=notas, cajetin=cajetin)
         dxfs.append(dxf)
-        svg = exportar.hoja_a_svg(col, cfg, tit)
+        svg = exportar.hoja_a_svg(col, cfg, tit, notas=notas, cajetin=cajetin)
         svgs.append(svg)
         open(os.path.join(carpeta, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w').write(svg)
         area += sum(c['geo'].area for c in col)
@@ -713,6 +824,13 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
 .spin{display:inline-block;width:15px;height:15px;border:2px solid #ffffff59;border-top-color:#fff;
  border-radius:50%;animation:g .7s linear infinite;vertical-align:-3px;margin-right:9px}
 @keyframes g{to{transform:rotate(360deg)}}
+.prog{margin-top:14px}
+.progbar{height:7px;border-radius:99px;background:var(--linea);overflow:hidden}
+.progbar i{display:block;height:100%;width:2%;border-radius:99px;background:var(--acento);
+ transition:width .45s cubic-bezier(.4,0,.2,1)}
+.progpie{display:flex;justify-content:space-between;gap:14px;margin-top:7px;
+ font-size:12.5px;color:var(--tenue2)}
+.progpie span:first-child{color:var(--tenue);font-weight:550}
 .err{color:var(--corte);font-size:14px;margin-top:14px}
 [hidden]{display:none!important}
 .par{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 16px}
@@ -744,7 +862,7 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
   El modelo debe traer los muros con <b>espesor</b>, no como caras sueltas.</p>
  <div class="drop" id="drop">
   <b id="dropTxt">Arrastra tu modelo aquí</b>
-  <small>STL · OBJ · DAE · PLY · GLB · SKP · FBX — hasta 120 MB</small>
+  <small>STL · OBJ · DAE · PLY · GLB · SKP · FBX — hasta {{MAX_MB}} MB</small>
   <input type="file" id="file" accept=".stl,.obj,.dae,.ply,.glb,.gltf,.off,.3mf,.skp,.fbx" hidden>
  </div>
 
@@ -772,26 +890,33 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
   <div>
    <label>Lámina</label>
    <select id="espesorSel">
-    <option value="1">Cartulina 1 mm</option>
-    <option value="2">Cartón 2 mm</option>
-    <option value="3" selected>Cartón pluma / MDF 3 mm</option>
+    <option value="1">Cartón batería 1 mm</option>
+    <option value="2" selected>Cartón batería 2 mm</option>
+    <option value="1">MDF 1 mm</option>
+    <option value="2">MDF 2 mm</option>
+    <option value="3">MDF 3 mm</option>
+    <option value="3">Acrílico 3 mm</option>
     <option value="5">Cartón pluma 5 mm</option>
-    <option value="6">MDF 6 mm</option>
     <option value="otro">Otro…</option>
    </select>
+   <p class="nota" id="notaAcrilico" hidden>El acrílico es sobre todo para grabar: en corte
+    derrite el borde y las piezas chicas se pegan entre sí.</p>
   </div>
   <div id="cEspesor" hidden>
-   <label>Espesor (mm)</label><input type="number" id="espesor" value="3" min="0.3" step="0.1">
+   <label>Espesor (mm)</label><input type="number" id="espesor" value="2" min="0.3" step="0.1">
   </div>
   <div>
    <label>Hoja</label>
    <select id="hoja">
-    <option value="500x700" selected>Ilustración 50 × 70 cm</option>
+    <option value="1000x780" selected>Cartón batería 100 × 78 cm</option>
+    <option value="500x780">Cartón batería 50 × 78 cm</option>
+    <option value="500x700">Ilustración 50 × 70 cm</option>
     <option value="600x900">Cartón pluma 60 × 90 cm</option>
-    <option value="900x600">Láser 90 × 60 cm</option>
+    <option value="900x600">Cama de láser 90 × 60 cm</option>
+    <option value="1200x900">Cama de láser 120 × 90 cm</option>
+    <option value="600x400">Acrílico 60 × 40 cm</option>
     <option value="1220x2440">MDF 1.22 × 2.44 m</option>
     <option value="297x420">A3 29.7 × 42 cm</option>
-    <option value="210x297">A4 21 × 29.7 cm</option>
     <option value="otra">Otra medida…</option>
    </select>
   </div>
@@ -802,10 +927,6 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
     <span style="color:var(--tenue2)">×</span>
     <input type="number" id="hoja_h" value="900" min="50" max="5000" step="10">
    </div>
-  </div>
-  <div>
-   <label>Kerf del láser (mm)</label>
-   <input type="number" id="kerf" value="0.15" min="0" max="1" step="0.05">
   </div>
   <div id="cVaciado" hidden>
    <label>Interior de las láminas</label>
@@ -826,6 +947,16 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
    <label class="chk"><input type="checkbox" id="envolvente"> Solo la envolvente</label>
    <label class="chk" style="margin-top:8px"><input type="checkbox" id="macizos">
     Laminar escaleras y muebles</label>
+   <label class="chk" style="margin-top:8px"><input type="checkbox" id="planta_grabada" checked>
+    Grabar la planta sobre la losa</label>
+   <label class="chk" style="margin-top:8px"><input type="checkbox" id="no_juntar" checked>
+    No juntar las plantas en una hoja</label>
+   <label style="margin-top:12px;display:block">Bastidor (mm de faldón, 0 = sin bastidor)</label>
+   <input type="number" id="bastidor" value="0" min="0" max="120" step="5">
+   <p class="nota">La losa sale con los muros de su planta dibujados encima, puertas incluidas:
+    es donde el alumno ve a qué pared corresponde cada pieza. Y cada hoja lleva una sola planta,
+    aunque sobre material. El <b>bastidor</b> son 5 piezas más —tabla y cuatro faldones— para
+    montar la maqueta encima; salen en su propia zona, al final.</p>
   </div>
   <div id="cNivel">
    <label>Piso (vacío = todos)</label>
@@ -857,6 +988,11 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
     <input type="color" id="color_marcado" value="#008000">
     <input type="text" id="capa_marcado" value="MARCADO" maxlength="60" spellcheck="false">
    </div>
+   <div class="capa">
+    <span class="op"><i style="background:#9ca3af"></i>No se corta</span>
+    <span></span>
+    <input type="text" id="capa_hoja" value="Defpoints" maxlength="60" spellcheck="false">
+   </div>
   </div>
   <p class="nota">Cada línea del archivo sale en la capa de su operación, con el nombre y el color
    que pongas aquí — que es lo único que mira la cabina para saber qué hacer con ella.
@@ -865,15 +1001,32 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
   <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:16px">
    <label class="chk"><input type="checkbox" id="tabla" checked> Tabla de corte dentro del archivo</label>
    <label class="chk"><input type="checkbox" id="marco" checked> Marco del tamaño de hoja</label>
+   <label class="chk"><input type="checkbox" id="notas" checked> Notas del operador arriba del marco</label>
+   <label class="chk"><input type="checkbox" id="cajetin" checked> Grabar el cajetín en una pieza</label>
   </div>
-  <p class="nota">La tabla lleva material, espesor, escala, medida de hoja, kerf, piezas y la
-   equivalencia de capas. Va <b>debajo</b> del marco y en una capa aparte (<b>HOJA</b>), así que
-   se ve al abrir el plano pero no se corta ni se graba.</p>
+  <div style="margin-top:14px">
+   <label>Alumno / autor (va grabado en el cajetín)</label>
+   <input type="text" id="alumno" maxlength="40" placeholder="opcional" spellcheck="false">
+  </div>
+  <p class="nota">La tabla lleva material, espesor, escala, medida de hoja, piezas y la
+   equivalencia de capas; va <b>debajo</b> del marco. Las notas del operador
+   («ROJO CORTA · AZUL GRABA…», material y escala) van <b>arriba</b>. Las dos, junto con el marco
+   y los rótulos de planta, caen en la capa que no se corta — de fábrica <b>Defpoints</b>, que es
+   la que AutoCAD nunca imprime y todo taller reconoce.
+   El <b>cajetín</b> sí se graba, y dentro de una pieza: así se queda en la maqueta armada
+   en vez de irse a la basura con el recorte.</p>
  </div>
 </details>
 
 <div class="card">
  <button class="go" id="go" disabled>Elige un modelo</button>
+ <div class="prog" id="prog" hidden>
+  <div class="progbar"><i id="progBar"></i></div>
+  <div class="progpie">
+   <span id="progTxt">Preparando…</span>
+   <span id="progFrase"></span>
+  </div>
+ </div>
  <div class="err" id="err" hidden></div>
  <p class="ejs-tit">O pruébalo con un ejemplo</p>
  <div class="ejs" id="ejs"></div>
@@ -931,6 +1084,44 @@ function dbgResultado(info){
   if(info.job){$('dbgLog').hidden=false;$('dbgLog').href='/r/'+info.job+'/debug.log';}
   else{$('dbgLog').hidden=true;}
 }
+// El id del trabajo lo pone el CLIENTE y viaja en la query: el POST se queda
+// abierto minutos y sin id de antemano no hay a quien preguntarle como va.
+function nuevoJob(){
+  const b=new Uint8Array(6);crypto.getRandomValues(b);
+  return [...b].map(x=>x.toString(16).padStart(2,'0')).join('');
+}
+// Frases para la espera. La barra dice el paso de verdad (viene del servidor);
+// esto solo acompaña, y por eso no inventa ningun porcentaje.
+const FRASES=['Tranqui arqui, aún hay tiempo',
+              'Tranqui arqui, aún hay tiempo',
+              'Los modelos grandes tardan un minuto',
+              'Va bien. No cierres la pestaña',
+              'Tranqui arqui, aún hay tiempo'];
+let sondeo=null;
+function arrancarProgreso(job){
+  const p=$('prog');p.hidden=false;
+  $('progBar').style.width='2%';
+  $('progTxt').textContent='Preparando…';
+  let i=0;
+  $('progFrase').textContent=FRASES[0];
+  const tick=async()=>{
+    try{
+      const r=await fetch('/progreso?job='+job);
+      const d=await r.json();
+      $('progBar').style.width=Math.max(2,d.pct)+'%';
+      $('progTxt').textContent=d.texto+(d.seg>4?' · '+Math.round(d.seg)+' s':'');
+    }catch(_){}
+    if(++i%4===0)$('progFrase').textContent=FRASES[(i/4)%FRASES.length];
+  };
+  tick();
+  sondeo=setInterval(tick,900);
+}
+function pararProgreso(){
+  if(sondeo){clearInterval(sondeo);sondeo=null;}
+  $('progBar').style.width='100%';
+  setTimeout(()=>{$('prog').hidden=true;},350);
+}
+
 // Sube por XHR para tener progreso de subida (fetch no lo da). Resuelve {status,text,ms}.
 function subir(url,body,headers){
   return new Promise((resolve,reject)=>{
@@ -968,8 +1159,18 @@ $('file').onchange=e=>setArchivo(e.target.files[0]);
   e.preventDefault();$('drop').classList.remove('on');}));
 $('drop').addEventListener('drop',e=>{if(e.dataTransfer.files[0])setArchivo(e.dataTransfer.files[0]);});
 
+const MAX_MB={{MAX_MB}};
+
 function setArchivo(f){
   if(!f)return;
+  // El servidor corta la conexion cuando el cuerpo pasa del tope, y el navegador
+  // solo ensena "error de red". Mejor decirlo aqui, antes de subir nada.
+  if(f.size>MAX_MB*1048576){
+    archivo=null;$('go').disabled=true;
+    $('dropTxt').textContent='Arrastra tu modelo aquí';
+    fallo(f.name+' pesa '+(f.size/1048576).toFixed(1)+' MB y el tope son '+MAX_MB+' MB.');
+    return;}
+  $('err').hidden=true;
   archivo=f;
   const kb=f.size/1024;
   $('dropTxt').textContent=f.name+'  ·  '+(kb<1024?kb.toFixed(0)+' KB':(kb/1024).toFixed(1)+' MB');
@@ -981,7 +1182,9 @@ document.querySelectorAll('input[name=ms]').forEach(r=>r.onchange=()=>{
 $('espesorSel').onchange=e=>{
   const otro=e.target.value==='otro';
   $('cEspesor').hidden=!otro;
-  if(!otro)$('espesor').value=e.target.value;};
+  if(!otro)$('espesor').value=e.target.value;
+  const t=otro?'':e.target.options[e.target.selectedIndex].text;
+  $('notaAcrilico').hidden=!/acr/i.test(t);};
 $('hoja').onchange=e=>{$('cHojaOtra').hidden=e.target.value!=='otra';};
 
 // El resumen del cajon cerrado dice como va a salir el archivo, para no tener
@@ -990,10 +1193,11 @@ function resumenTaller(){
   const n=id=>$(id).value.trim().toUpperCase()||id.replace('capa_','').toUpperCase();
   $('resumenTaller').textContent=
     n('capa_corte')+' · '+n('capa_grabado')+' · '+n('capa_marcado')+
+    ' · '+n('capa_hoja')+' no se corta'+
     ($('tabla').checked?' · con tabla de corte':' · sin tabla')+
     ($('marco').checked?'':' · sin marco');
 }
-['capa_corte','capa_grabado','capa_marcado','tabla','marco'].forEach(id=>{
+['capa_corte','capa_grabado','capa_marcado','capa_hoja','tabla','marco'].forEach(id=>{
   $(id).addEventListener('input',resumenTaller);
   $(id).addEventListener('change',resumenTaller);});
 ['corte','grabado','marcado'].forEach(op=>{
@@ -1030,10 +1234,12 @@ async function correrEjemplo(boton){
   const antes=boton.innerHTML;
   document.querySelectorAll('.ej').forEach(b=>b.disabled=true);
   boton.innerHTML='<b><span class="spin"></span>Rebanando y acomodando…</b>'+
-                  '<small>los modelos grandes tardan un minuto</small>';
+                  '<small>Tranqui arqui, aún hay tiempo</small>';
   $('err').hidden=true;$('res').hidden=true;
+  const job=nuevoJob();
+  arrancarProgreso(job);
   try{
-    const r=await subir('/ejemplo',JSON.stringify({id:boton.dataset.id}),
+    const r=await subir('/ejemplo?job='+job,JSON.stringify({id:boton.dataset.id}),
                         {'Content-Type':'application/json'});
     let d;try{d=JSON.parse(r.text);}catch(_){d={error:'respuesta no-JSON del servidor'};}
     dbgResultado({job:d.job,raw:JSON.stringify(d,null,2),
@@ -1041,6 +1247,7 @@ async function correrEjemplo(boton){
     if(d.error){fallo(d.error);}else{pintar(d);}
   }catch(e){fallo('No se pudo procesar: '+e.message);}
   finally{
+    pararProgreso();
     corriendo=false;
     boton.innerHTML=antes;
     document.querySelectorAll('.ej').forEach(b=>b.disabled=false);
@@ -1052,6 +1259,8 @@ $('go').onclick=async()=>{
   $('err').hidden=true;$('res').hidden=true;
   $('go').disabled=true;
   $('go').innerHTML='<span class="spin"></span>Rebanando y acomodando…';
+  const job=nuevoJob();
+  arrancarProgreso(job);
   const fd=new FormData();
   fd.append('modelo',archivo);
   fd.append('unidades',$('unidades').value);
@@ -1063,21 +1272,27 @@ $('go').onclick=async()=>{
   fd.append('hoja',$('hoja').value);
   fd.append('hoja_w',$('hoja_w').value);
   fd.append('hoja_h',$('hoja_h').value);
-  fd.append('kerf',$('kerf').value);
   fd.append('vaciar',document.querySelector('input[name=vc]:checked').value);
   fd.append('modo',modo());
   fd.append('uniones',document.querySelector('input[name=un]:checked').value);
   fd.append('envolvente',$('envolvente').checked?'1':'0');
   fd.append('macizos',$('macizos').checked?'1':'0');
+  fd.append('planta_grabada',$('planta_grabada').checked?'1':'0');
+  fd.append('juntar_plantas',$('no_juntar').checked?'0':'1');
+  fd.append('bastidor',$('bastidor').value||'0');
   fd.append('piso',$('piso').value||'');
   fd.append('tabla',$('tabla').checked?'1':'0');
   fd.append('marco',$('marco').checked?'1':'0');
+  fd.append('capa_hoja',$('capa_hoja').value);
+  fd.append('notas',$('notas').checked?'1':'0');
+  fd.append('cajetin',$('cajetin').checked?'1':'0');
+  fd.append('alumno',$('alumno').value);
   ['corte','grabado','marcado'].forEach(op=>{
     fd.append('capa_'+op,$('capa_'+op).value);
     fd.append('color_'+op,$('color_'+op).value);});
   try{
     $('dbgProgTxt').textContent='subiendo…';$('dbgBar').style.width='0';
-    const r=await subir('/cortar',fd);
+    const r=await subir('/cortar?job='+job,fd);
     let d;try{d=JSON.parse(r.text);}catch(_){d={error:'respuesta no-JSON del servidor'};}
     dbgResultado({job:d.job,raw:JSON.stringify(d,null,2),
       kv:{archivo:archivo.name,
@@ -1086,7 +1301,8 @@ $('go').onclick=async()=>{
     if(d.error){fallo(d.error);return;}
     pintar(d);
   }catch(e){fallo('No se pudo procesar: '+e.message);}
-  finally{$('go').disabled=false;$('go').textContent='Generar archivo de corte';}
+  finally{pararProgreso();$('go').disabled=false;
+          $('go').textContent='Generar archivo de corte';}
 };
 
 function fallo(msg){$('err').textContent=msg;$('err').hidden=false;}
@@ -1181,9 +1397,33 @@ function pintarEstructura(d){
 }
 </script>
 </html>"""
+PAGINA = PAGINA.replace('{{MAX_MB}}', str(MAX_MB))
+
+
+def ip_lan():
+    """La IP con la que nos ven los demas equipos de la red."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 80))          # no manda nada, solo elige la interfaz
+        return s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
 
 
 if __name__ == '__main__':
-    puerto = int(sys.argv[1]) if len(sys.argv) > 1 else 3561
-    print('Despiece 3D en http://localhost:%d' % puerto)
-    ThreadingHTTPServer(('127.0.0.1', puerto), H).serve_forever()
+    args = [a for a in sys.argv[1:] if a != '--red']
+    red = '--red' in sys.argv[1:]           # abrir a la red local: hay que pedirlo
+    puerto = int(args[0]) if args else 3561
+    host = '0.0.0.0' if red else '127.0.0.1'
+    if red:
+        ip = ip_lan()
+        print('Despiece 3D ABIERTO A LA RED en http://%s:%d' % (ip or '<tu-ip>', puerto))
+        print('Cualquiera en esta misma red puede entrar y subir archivos. '
+              'Sin contrasena. Ciérralo cuando termines (Ctrl+C).')
+    else:
+        print('Despiece 3D en http://localhost:%d  (solo esta Mac; usa --red para compartir)'
+              % puerto)
+    ThreadingHTTPServer((host, puerto), H).serve_forever()

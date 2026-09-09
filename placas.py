@@ -8,7 +8,9 @@ import warnings
 
 import numpy as np
 import trimesh
-from shapely.geometry import Polygon, MultiPolygon, Point as ShapelyPoint
+import shapely.affinity as aff
+from shapely.geometry import (Polygon, MultiPolygon, LineString,
+                              Point as ShapelyPoint)
 from shapely.ops import unary_union
 
 # los cuerpos degenerados de un modelo real (astillas, caras dobles) hacen que
@@ -577,26 +579,36 @@ def niveles_de_piso(placas, junta_m=0.60):
     return niveles
 
 
-def _recortar_a_franja(placa, z0, z1, holgura=1e-6):
-    """La parte de la placa que cae entre las alturas z0 y z1.
+def _banda(placa, z0, z1, holgura=1e-6):
+    """La franja de alturas [z0, z1] llevada al plano local de la placa.
 
     La placa es plana, asi que la z del mundo es una funcion afin de sus
-    coordenadas locales: la franja de alturas es una banda recta en su plano y
-    basta con intersecar.
+    coordenadas locales: la franja de alturas es una banda recta en su plano.
+    Devuelve el Polygon de la banda, o True/False si la placa es horizontal
+    (entra entera o no entra).
     """
     F = placa['a_mundo']
     a, b, c0 = float(F[2, 0]), float(F[2, 1]), float(F[2, 3])
     norma = float(np.hypot(a, b))
     if norma < 1e-9:                       # placa horizontal: entra o no entra
-        return placa['poly'] if z0 - holgura <= c0 <= z1 + holgura else None
+        return bool(z0 - holgura <= c0 <= z1 + holgura)
 
     n = np.array([a, b]) / norma           # hacia donde sube la z, en el plano
     e = np.array([-n[1], n[0]])
     t0, t1 = (z0 - c0) / norma, (z1 - c0) / norma
     b_ = placa['poly'].bounds
     L = (abs(b_[2] - b_[0]) + abs(b_[3] - b_[1])) * 2 + 10.0
-    banda = Polygon([n * t0 + e * (-L), n * t1 + e * (-L),
-                     n * t1 + e * L, n * t0 + e * L])
+    return Polygon([n * t0 + e * (-L), n * t1 + e * (-L),
+                    n * t1 + e * L, n * t0 + e * L])
+
+
+def _recortar_a_franja(placa, z0, z1, holgura=1e-6):
+    """La parte de la placa que cae entre las alturas z0 y z1."""
+    banda = _banda(placa, z0, z1, holgura)
+    if banda is True:
+        return placa['poly']
+    if banda is False:
+        return None
     try:
         g = placa['poly'].intersection(banda)
     except Exception:
@@ -652,6 +664,152 @@ def cortar_por_piso(placas, piso, junta_m=0.60):
     for k, p in enumerate(salida):
         p['i'] = k
     return salida, niveles, ''
+
+
+# ------------------------------------------- la planta grabada sobre la losa
+def _mundo_xy(placa):
+    """Afin 2D local (u,v) -> mundo (x,y), en el formato de shapely."""
+    F = placa['a_mundo']
+    return [float(F[0, 0]), float(F[0, 1]),
+            float(F[1, 0]), float(F[1, 1]),
+            float(F[0, 3]), float(F[1, 3])]
+
+
+def _desde_mundo_xy(placa):
+    """La inversa del anterior. None si la placa no es horizontal (no invierte)."""
+    F = placa['a_mundo']
+    A = np.array([[F[0, 0], F[0, 1]], [F[1, 0], F[1, 1]]], dtype=float)
+    if abs(float(np.linalg.det(A))) < 1e-12:
+        return None
+    Ai = np.linalg.inv(A)
+    t = Ai @ np.array([float(F[0, 3]), float(F[1, 3])])
+    return [Ai[0, 0], Ai[0, 1], Ai[1, 0], Ai[1, 1], -t[0], -t[1]]
+
+
+def _huella_en_planta(placa, z0, z1, t_min):
+    """Lo que la placa ocupa EN PLANTA entre las alturas z0 y z1, en mundo XY.
+
+    Una placa es plana: si es vertical, su sombra en planta es un segmento de
+    recta, y el muro de verdad es ese segmento engordado su espesor. Se rebana a
+    la altura pedida (no el muro entero) para que las PUERTAS salgan como huecos:
+    a 15 cm del piso el vano ya no tiene material y la huella se parte en dos.
+    """
+    banda = _banda(placa, z0, z1)
+    if banda is True or banda is False:
+        return []
+    try:
+        g = placa['poly'].intersection(banda)
+    except Exception:
+        return []
+    if g.is_empty:
+        return []
+    partes = [x for x in (g.geoms if g.geom_type.startswith('Multi') else [g])
+              if x.geom_type == 'Polygon' and not x.is_empty]
+    if not partes:
+        return []
+
+    F = placa['a_mundo']
+    nx, ny = float(F[0, 2]), float(F[1, 2])       # normal de la placa, en planta
+    ln = float(np.hypot(nx, ny))
+    if ln < 1e-9:                                 # horizontal: no deja huella
+        return []
+    dx, dy = -ny / ln, nx / ln                    # por aqui corre el muro
+    M = _mundo_xy(placa)
+    t = max(float(placa.get('espesor_real') or 0.0), t_min)
+
+    salida = []
+    for p in partes:
+        xy = [(M[0] * u + M[1] * v + M[4], M[2] * u + M[3] * v + M[5])
+              for u, v in p.exterior.coords]
+        ts = [dx * x + dy * y for x, y in xy]
+        # el pie de la recta: le quito a un punto cualquiera su avance sobre d y
+        # me queda su desplazamiento perpendicular, que es igual para todos
+        px, py = xy[0][0] - dx * ts[0], xy[0][1] - dy * ts[0]
+        a = (px + dx * min(ts), py + dy * min(ts))
+        b = (px + dx * max(ts), py + dy * max(ts))
+        if (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 < 1e-12:
+            continue
+        salida.append(LineString([a, b]).buffer(t / 2.0, cap_style=2,
+                                                join_style=2))
+    return salida
+
+
+def huellas_en_losas(placas, t_min, junta_m=0.60, alto_m=0.15):
+    """Graba en cada losa la PLANTA de los muros que se paran encima.
+
+    Es lo que separa un monton de rectangulos anonimos de algo que se puede
+    armar: el alumno ve dibujado en la losa donde va cada muro, como en el
+    archivo que hace a mano un arquitecto. Se suma a las marcas de ensamble que
+    ya trae la placa. Devuelve cuantas losas quedaron marcadas.
+    """
+    losas = [p for p in placas if p['tipo'] == 'losa']
+    muros = [p for p in placas if p['tipo'] in ('muro', 'techo')]
+    if not losas or not muros:
+        return 0
+
+    niveles = niveles_de_piso(placas, junta_m)
+    if not niveles:
+        return 0
+    z_tope = max(float(np.max((p['a_mundo'] @ np.array(
+        [[c[0], c[1], 0.0, 1.0] for c in p['poly'].exterior.coords]).T)[2]))
+        for p in placas)
+
+    marcadas = 0
+    for losa in losas:
+        z = float(losa['z_min'])
+        i = min(range(len(niveles)), key=lambda k: abs(niveles[k] - z))
+        z_sig = niveles[i + 1] if i + 1 < len(niveles) else z_tope
+        za = z + float(losa.get('espesor_real') or 0.0) / 2.0 + 0.01
+        zb = min(za + alto_m, z_sig - 0.02)
+        if zb <= za:
+            zb = za + 0.01
+        inv = _desde_mundo_xy(losa)
+        if inv is None:
+            continue
+
+        dibujo = []
+        for w in muros:
+            for h in _huella_en_planta(w, za, zb, t_min):
+                try:
+                    g = aff.affine_transform(h, inv).intersection(losa['poly'])
+                except Exception:
+                    continue
+                if not g.is_empty:
+                    dibujo.append(g)
+        if not dibujo:
+            continue
+        previo = losa.get('marcas')
+        if previo is not None and not previo.is_empty:
+            dibujo.append(previo)
+        g = unary_union(dibujo)
+        partes = [x for x in (g.geoms if g.geom_type.startswith('Multi') else [g])
+                  if x.geom_type == 'Polygon' and x.area > 1e-9]
+        if not partes:
+            continue
+        losa['marcas'] = partes[0] if len(partes) == 1 else MultiPolygon(partes)
+        marcadas += 1
+    return marcadas
+
+
+def asignar_planta(placas, junta_m=0.60):
+    """Marca cada placa con la planta a la que pertenece (1 = la de mas abajo).
+
+    Sirve para no revolver las plantas en la misma hoja: una hoja con los muros
+    de la baja y de la alta mezclados no hay quien la arme.
+    """
+    niveles = niveles_de_piso(placas, junta_m)
+    if not niveles:
+        for p in placas:
+            p['planta'] = 1
+        return 1
+    for p in placas:
+        z = float(p['z_min'])
+        k = 0
+        for i, nz in enumerate(niveles):
+            if z >= nz - junta_m / 2.0:
+                k = i
+        p['planta'] = k + 1
+    return len(niveles)
 
 
 def nombrar(placas):

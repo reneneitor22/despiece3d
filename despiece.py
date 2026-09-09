@@ -471,9 +471,93 @@ def partir_grandes(piezas, cfg, res=2.0, rotaciones=None, max_trozos=64):
     return salida, partidas
 
 
-def acomodar(piezas, cfg, res=2.0, rotaciones=None):
+SEP_ZONA_MM = 6.0         # aire entre dos zonas de la misma hoja
+ROTULO_MM = 8.0           # franja reservada arriba de cada zona para su nombre
+
+
+def _acomodar_por_grupo(piezas, cfg, agrupar, res, rotaciones):
+    """Acomoda cada grupo por separado y luego empaca los bloques en las hojas.
+
+    Nestear todo junto revuelve los muros de la planta baja con los de la alta y
+    la hoja no hay quien la arme; darle una hoja entera a cada planta desperdicia
+    material (un edificio de 13 niveles pedia 13 hojas casi vacias). El punto
+    medio es el del arquitecto: cada planta es un BLOQUE compacto y los bloques
+    se acomodan en estantes dentro de la hoja, cada uno con su rotulo y su marco.
+    """
+    claves = sorted({pz.get(agrupar) for pz in piezas},
+                    key=lambda v: (v is None, v))
+    # Con un solo grupo no hay nada que separar: rotular "PLANTA 1" toda la hoja
+    # es ruido, y el acomodo normal aprovecha mejor el material.
+    if len(claves) < 2:
+        return acomodar(piezas, cfg, res=res, rotaciones=rotaciones)
+    bloques, grandes = [], []
+    for cl in claves:
+        sub = [pz for pz in piezas if pz.get(agrupar) == cl]
+        hs, gr = acomodar(sub, cfg, res=res, rotaciones=rotaciones)
+        grandes.extend(gr)
+        for h in hs:
+            cajas = [c['geo'].bounds for c in h]
+            x0 = min(b[0] for b in cajas)
+            y0 = min(b[1] for b in cajas)
+            bloques.append({'clave': cl, 'col': h, 'x0': x0, 'y0': y0,
+                            'etiqueta': sub[0].get('rotulo', cl),
+                            'w': max(b[2] for b in cajas) - x0,
+                            'h': max(b[3] for b in cajas) - y0})
+
+    W = cfg.hoja[0] - 2 * cfg.margen_mm
+    H = cfg.hoja[1] - 2 * cfg.margen_mm
+    # En orden de planta, no por tamano: el alumno arma de abajo hacia arriba y
+    # tener la planta 6 en la hoja 2 y la 3 en la 3 es peor que gastar una hoja.
+    bloques.sort(key=lambda b: ((b['clave'] is None, b['clave']), -b['h']))
+    hojas, estantes = [], []
+    for b in bloques:
+        bw, bh = b['w'], b['h'] + ROTULO_MM
+        destino = None
+        for k, st in enumerate(estantes):
+            if bw <= W - st['x'] and bh <= st['alto']:
+                destino = (k, st['x'], st['y'])
+                st['x'] += bw + SEP_ZONA_MM
+                break
+            y = st['y'] + st['alto'] + SEP_ZONA_MM
+            if bw <= W and y + bh <= H:
+                st['y'], st['alto'], st['x'] = y, bh, bw + SEP_ZONA_MM
+                destino = (k, 0.0, y)
+                break
+        if destino is None:
+            hojas.append([])
+            estantes.append({'y': 0.0, 'alto': bh, 'x': bw + SEP_ZONA_MM})
+            destino = (len(hojas) - 1, 0.0, 0.0)
+
+        k, dx, dy = destino
+        ddx = cfg.margen_mm + dx - b['x0']
+        ddy = cfg.margen_mm + dy - b['y0']
+        for c in b['col']:
+            c['geo'] = aff.translate(c['geo'], ddx, ddy)
+            if c['guia'] is not None:
+                c['guia'] = aff.translate(c['guia'], ddx, ddy)
+            c['zona'] = b['etiqueta']
+            hojas[k].append(c)
+
+    hojas = [h for h in hojas if h]
+    for i, h in enumerate(hojas):
+        for col in h:
+            col['pieza']['hoja'] = i + 1
+    return hojas, grandes
+
+
+def acomodar(piezas, cfg, res=2.0, rotaciones=None, agrupar=None):
     """Bottom-left-fill sobre malla. Devuelve (hojas, ids_que_no_caben).
-    Cada colocada trae ya la geometria final: {'pieza','geo','guia'}."""
+    Cada colocada trae ya la geometria final: {'pieza','geo','guia'}.
+
+    `agrupar` es el nombre de un campo de la pieza (p.ej. 'planta') que NO se
+    puede mezclar en una hoja: se acomoda cada grupo por separado y cada hoja
+    sale de un solo grupo. Cuesta material --un grupo chico se lleva una hoja
+    entera-- y aun asi es lo correcto: una hoja con los muros de la planta baja
+    revueltos con los de la alta no hay quien la arme.
+    """
+    if agrupar:
+        return _acomodar_por_grupo(piezas, cfg, agrupar, res, rotaciones)
+
     W = cfg.hoja[0] - 2 * cfg.margen_mm
     H = cfg.hoja[1] - 2 * cfg.margen_mm
     nw, nh = int(W / res), int(H / res)

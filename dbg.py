@@ -45,6 +45,38 @@ def _job():
     return getattr(_estado, 'job', None)
 
 
+# ------------------------------------------------------------------ progreso
+# En que etapa va cada trabajo, para que la pantalla pueda enseñar una barra de
+# verdad y no una animacion inventada. Vive aparte del log porque el log se
+# apaga y esto no: el diccionario lo lee OTRO hilo (el que atiende /progreso),
+# de ahi el candado.
+_PROGRESO = {}
+_PLOCK = threading.Lock()
+
+
+def marcar(etapa_nombre, job=None):
+    job = job or _job()
+    if not job:
+        return
+    with _PLOCK:
+        _PROGRESO[job] = (etapa_nombre, time.time())
+
+
+def progreso(job):
+    """(etapa, ts) del trabajo, o None si no ha empezado o ya se olvido."""
+    with _PLOCK:
+        return _PROGRESO.get(job)
+
+
+def olvidar(job):
+    with _PLOCK:
+        _PROGRESO.pop(job, None)
+        # un servidor de escritorio no necesita mas historia que la del rato
+        if len(_PROGRESO) > 64:
+            for k in sorted(_PROGRESO, key=lambda k: _PROGRESO[k][1])[:32]:
+                _PROGRESO.pop(k, None)
+
+
 def activo():
     if os.environ.get('DESPIECE_DEBUG', '').strip().lower() in _VERDAD:
         return True
@@ -82,6 +114,7 @@ def log(evento, nivel='info', **campos):
 @contextlib.contextmanager
 def etapa(nombre, **campos):
     """Envuelve un bloque: registra .inicio, .fin con ms, o .error con traceback."""
+    marcar(nombre)
     log(nombre + '.inicio', **campos)
     t0 = time.perf_counter()
     try:
