@@ -1,0 +1,19 @@
+# Versiones exactas, las mismas que corren en la Mac de Rene.
+# Probadas en Python 3.11 arm64 (Apple Silicon). Si algo se actualiza y truena,
+# este archivo dice a que volver.
+numpy==2.0.2
+scipy==1.13.1
+shapely==2.0.7
+trimesh==4.12.2
+networkx==3.2.1
+rectpack==0.2.2
+ezdxf==1.4.2
+reportlab==4.5.1
+pillow==11.3.0
+openskp==1.1.0
+
+# Las dos que trimesh NO pide sola y sin las cuales el despiece truena:
+#   mapbox_earcut -> "No available triangulation engine!" al extruir poligonos
+#   rtree         -> "No module named 'rtree'" al armar el arbol de contornos
+mapbox_earcut==2.0.0
+rtree==1.4.1

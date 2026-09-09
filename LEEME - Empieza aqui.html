@@ -1,0 +1,80 @@
+<title>Despiece 3D — cómo instalarlo</title>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{color-scheme:light}
+body{margin:0;background:#f6f7f9;color:#16181d;font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+.w{max-width:720px;margin:0 auto;padding:40px 22px 80px}
+h1{font-size:30px;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:#5b616e;margin:0 0 34px}
+.paso{background:#fff;border:1px solid #e3e6ec;border-radius:14px;padding:20px 22px;margin:0 0 16px}
+.paso h2{font-size:18px;margin:0 0 8px;display:flex;align-items:center;gap:10px}
+.n{background:#1f6feb;color:#fff;width:26px;height:26px;border-radius:50%;display:inline-flex;
+   align-items:center;justify-content:center;font-size:14px;flex:0 0 auto}
+.arch{background:#eef2f8;border:1px solid #d8e0ee;border-radius:8px;padding:2px 8px;
+      font:14px ui-monospace,Menlo,monospace;white-space:nowrap}
+.ojo{background:#fff8e6;border:1px solid #f0dca8;border-radius:14px;padding:18px 22px;margin:24px 0}
+.ojo h2{font-size:17px;margin:0 0 8px}
+p{margin:0 0 10px}
+ul{margin:6px 0 0;padding-left:20px}
+li{margin:0 0 6px}
+.fin{color:#5b616e;font-size:14px;margin-top:34px;border-top:1px solid #e3e6ec;padding-top:18px}
+</style>
+<div class="w">
+<h1>Despiece 3D</h1>
+<p class="sub">Convierte un modelo 3D en las piezas cortadas, numeradas y acomodadas en hojas, listas para mandar al taller.</p>
+
+<div class="ojo">
+<h2>Antes que nada: la primera vez, abre con clic derecho</h2>
+<p>macOS desconfía de los archivos que llegan de fuera. Si le das doble clic normal, va a decir
+que <em>no se puede abrir porque es de un desarrollador no identificado</em>.</p>
+<p><strong>La primera vez de cada archivo:</strong> clic derecho encima → <strong>Abrir</strong> →
+en el aviso, otra vez <strong>Abrir</strong>. Después ya funciona con doble clic normal.</p>
+<p>Si aun así no deja: <strong>Ajustes del Sistema → Privacidad y seguridad</strong>, hasta abajo
+sale el archivo y un botón <strong>Abrir de todos modos</strong>.</p>
+</div>
+
+<div class="paso">
+<h2><span class="n">1</span> Instalar (una sola vez)</h2>
+<p>Clic derecho → Abrir en <span class="arch">1 - Instalar</span></p>
+<p>Se abre una ventana negra (Terminal) y trabaja sola. Puede tardar entre 5 y 15 minutos
+la primera vez, porque baja lo que le falta a tu Mac.</p>
+<ul>
+<li>Si te pide <strong>la contraseña de tu Mac</strong>, escríbela y dale Enter.
+<strong>No se ve nada mientras escribes: es normal.</strong></li>
+<li>Si te pregunta algo, escribe <strong>SI</strong> y Enter.</li>
+</ul>
+<p>Al final corta una casa de ejemplo para comprobar que quedó bien y dice
+<strong>LISTO</strong>. Si dice que algo falló, mándame una foto de esa ventana completa.</p>
+</div>
+
+<div class="paso">
+<h2><span class="n">2</span> Usarlo</h2>
+<p>Doble clic en <span class="arch">2 - Abrir Despiece 3D</span></p>
+<p>Se abre solo en el navegador (tarda unos 10 segundos). Ahí subes tu modelo, eliges el
+espesor de lámina, el tamaño de hoja y la escala, y descargas el zip con
+<strong>DWG, DXF, PDF y la guía de armado</strong>.</p>
+<p>Mientras lo uses, <strong>deja abierta la ventana negra</strong>. Para cerrar el programa:
+Control-C en esa ventana, o cerrarla.</p>
+</div>
+
+<div class="paso">
+<h2><span class="n">3</span> Si algo se ve raro</h2>
+<p>Doble clic en <span class="arch">Si algo falla - Revisar</span></p>
+<p>Corta la casa de ejemplo y revisa que el DWG salga con dibujo y con las capas
+CORTE, GRABADO y MARCADO. Si eso pasa, el programa está bien y el problema está en el
+modelo que subiste; si falla, es la instalación y me mandas la foto de la ventana.</p>
+</div>
+
+<div class="paso">
+<h2>Qué se instala en tu Mac</h2>
+<ul>
+<li><strong>Homebrew</strong> — el instalador de herramientas de línea de comandos de Mac.</li>
+<li><strong>python 3.11</strong> — el motor. Queda aparte, no toca nada de lo que ya tienes.</li>
+<li><strong>assimp</strong> — para leer archivos FBX.</li>
+<li><strong>libredwg</strong> — para escribir el DWG.</li>
+</ul>
+<p>Todo lo demás vive dentro de esta carpeta. Si la borras, no queda nada regado.</p>
+</div>
+
+<p class="fin">Todo corre en tu Mac. Ni el modelo ni los archivos de corte salen de tu computadora.</p>
+</div>

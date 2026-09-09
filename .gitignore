@@ -8,3 +8,8 @@ pruebas/
 
 .cache_skp/
 out_merida*/
+.venv/
+.venv_test/
+out/
+out_casa/
+out_solido/

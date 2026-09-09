@@ -3,9 +3,9 @@
   "configurations": [
     {
       "name": "despiece3d",
-      "runtimeExecutable": "python3",
+      "runtimeExecutable": "./.venv/bin/python",
       "runtimeArgs": [
-        "/Users/renerodriguez/Desktop/Claude/despiece3d/app.py",
+        "app.py",
         "3562"
       ],
       "port": 3562
