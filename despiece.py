@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 Despiece 3D - motor de corte para maquetas.
-Entra un modelo 3D (STL/OBJ/PLY/GLB/DAE), salen piezas planas numeradas
-listas para corte laser (DXF) o impresion + corte a mano (SVG).
+Entra un modelo 3D (IFC/STL/OBJ/PLY/GLB/DAE/SKP/FBX), salen piezas planas
+numeradas listas para corte laser (DXF) o impresion + corte a mano (SVG).
 
 Modo actual: CURVAS DE NIVEL (apilado de rebanadas horizontales).
 """
@@ -46,9 +46,11 @@ def cargar_modelo(ruta):
 
     Un alumno baja lo que sea: la pagina de error del sitio guardada con
     extension .glb, un .zip sin descomprimir, un STL a medio bajar. Lo que no
-    puede es toparse con un traceback de trimesh. El .skp de SketchUp y el
-    .fbx de Autodesk se desvian a su propio lector: trimesh no sabe ni que
-    existen.
+    puede es toparse con un traceback de trimesh. El .skp de SketchUp, el .fbx
+    de Autodesk y el .ifc de ArchiCAD/Revit se desvian a su propio lector:
+    trimesh no sabe ni que existen. El .rvt no se desvia a ningun lado --no hay
+    lector libre que lo abra-- pero si se reconoce, para contestar con la
+    version del archivo y como sacarle el IFC.
     """
     import os
     import trimesh
@@ -57,6 +59,17 @@ def cargar_modelo(ruta):
         raise SystemExit('no existe el archivo: %s' % ruta)
     if os.path.getsize(ruta) < 64:
         raise SystemExit('el archivo esta vacio o se bajo a medias: %s' % ruta)
+
+    import rvt as _rvt
+    if _rvt.es_rvt(ruta):
+        # Formato cerrado de Autodesk: aqui no se lee, se explica (ver rvt.py).
+        raise SystemExit(_rvt.rechazo(ruta))
+
+    import ifc as _ifc
+    if _ifc.es_ifc(ruta):
+        # El unico que entra con semantica: trae escrito que es cada elemento y
+        # a que planta va, y ya viene en metros con Z arriba (ver ifc.py).
+        return _ifc.cargar_ifc(ruta)
 
     import skp as _skp
     if _skp.es_skp(ruta):
@@ -83,7 +96,7 @@ def cargar_modelo(ruta):
         m = trimesh.load(ruta, force='mesh')
     except Exception as e:
         raise SystemExit('no se pudo leer %s (%s). Formatos que si lee: '
-                         'STL, OBJ, PLY, GLB, DAE, SKP, FBX.' % (ruta, e))
+                         'IFC, STL, OBJ, PLY, GLB, DAE, SKP, FBX.' % (ruta, e))
     if m is None or m.is_empty or len(m.faces) == 0:
         raise SystemExit('el archivo se leyo pero no trae geometria: %s' % ruta)
     return m

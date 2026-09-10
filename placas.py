@@ -8,6 +8,7 @@ import warnings
 
 import numpy as np
 import trimesh
+from trimesh.graph import connected_components
 import shapely.affinity as aff
 from shapely.geometry import (Polygon, MultiPolygon, LineString,
                               Point as ShapelyPoint)
@@ -87,6 +88,96 @@ def _soldar(mesh):
     except Exception:
         pass
     return m
+
+
+# el umbral de area mas permisivo de los dos que piden los clientes de esta
+# funcion: extraer_placas tira a 1e-6 y cuerpos_macizos a 1e-9. Se prefiltra con
+# el flojo y cada quien aplica el suyo en su propio loop, para no cambiarle el
+# conjunto de cuerpos a ninguno de los dos.
+AREA_ASTILLA = 1e-9
+
+
+def _borde_exterior(g):
+    """Las coordenadas del contorno, venga como venga la geometria.
+
+    `poly` casi siempre es un Polygon, pero las operaciones de recorte pueden
+    dejar un MultiPolygon o una GeometryCollection con lineas sueltas adentro.
+    Pedirle `.exterior` a eso truena. Devuelve None cuando no hay contorno que
+    valga, para que quien llame lo salte en vez de morirse.
+    """
+    if g is None or g.is_empty:
+        return None
+    if g.geom_type != 'Polygon':
+        partes = [p for p in (g.geoms if hasattr(g, 'geoms') else [])
+                  if p.geom_type == 'Polygon' and not p.is_empty]
+        if not partes:
+            return None
+        g = max(partes, key=lambda x: x.area)
+    coords = list(g.exterior.coords)
+    return coords or None
+
+
+def preparar_cuerpos(mesh, min_caras=4, min_area=AREA_ASTILLA):
+    """Suelda la malla y devuelve (soldada, cuerpos, astillas).
+
+    Reemplaza a `mesh.split(only_watertight=False)`, que arma un Trimesh completo
+    por cada componente conectado. En un modelo de SketchUp eso son decenas de
+    miles: en el de Irving, 26 361 componentes, de los que 25 724 (97.6%) son
+    astillas de una o dos caras que el loop de quien llama tira en su primera
+    linea. Construirlas cuesta ~52 s y tanta memoria que el proceso se muere de
+    un SIGKILL antes de entregar nada.
+
+    El grafo de conectividad, en cambio, cuesta 0.03 s y ya trae cuantas caras
+    tiene cada componente: se filtra ahi y se construye solo lo que sobrevive
+    (637 de 26 361 en ese modelo). Medido: 52 s -> 1.03 s, misma salida.
+
+    `astillas` son pares (indice, n_caras) de lo que se filtro. Van de vuelta
+    porque el conteo de descartados se le enseña al alumno y tiene que seguir
+    dando el mismo numero.
+    """
+    m = _soldar(mesh)
+    if len(m.faces) == 0:
+        return m, [], []
+    comps = connected_components(m.face_adjacency,
+                                 nodes=np.arange(len(m.faces)), min_len=1)
+    # un solo cuerpo (o ninguno): el mismo repliegue que traia el codigo con split
+    if len(comps) <= 1:
+        return m, [m], []
+    areas = m.area_faces
+    vivos, astillas = [], []
+    for i, c in enumerate(comps):
+        if len(c) < min_caras or areas[c].sum() < min_area:
+            astillas.append((i, len(c)))
+        else:
+            vivos.append(c)
+    if not vivos:
+        return m, [], astillas
+    # repair=True es lo que le pasa trimesh.graph.split a submesh: se conserva
+    # para que la geometria salga identica a la de antes
+    cuerpos = m.submesh(vivos, only_watertight=False, repair=True)
+    if not isinstance(cuerpos, list):
+        cuerpos = [cuerpos]
+    return m, cuerpos, astillas
+
+
+def tabla_obb(cuerpos):
+    """El OBB de cada cuerpo, calculado UNA sola vez.
+
+    `extraer_placas` y `cuerpos_macizos` piden la caja orientada de EXACTAMENTE
+    los mismos cuerpos, y cada una es un casco convexo: medido, 1.99 s para 1525
+    cuerpos, pagados dos veces. Se calcula aqui y se les pasa hecha.
+
+    Cada entrada es la tupla (ejes, ext, centro) o la excepcion que solto
+    `oriented_bounds` con un cuerpo degenerado, para que quien llama pueda
+    reportarla con el mismo texto de siempre.
+    """
+    salida = []
+    for c in cuerpos:
+        try:
+            salida.append(_obb(c))
+        except Exception as e:      # vertices colineales: no hay caja que sacar
+            salida.append(e)
+    return salida
 
 
 def _canonizar(N):
@@ -409,27 +500,54 @@ def fundir_pegadas(placas, t_modelo, min_encime=0.05, vueltas=6):
 
 
 def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
-                   t_modelo=0.0):
+                   t_modelo=0.0, preparado=None, obbs=None, tipos=None,
+                   superficies=True):
     """Devuelve (placas, descartados). Cada placa: normal, espesor real,
-    poligono 2D (m), marco 3D."""
+    poligono 2D (m), marco 3D.
+
+    `preparado` es la salida de preparar_cuerpos() y `obbs` la de tabla_obb():
+    quien procesa el modelo completo los calcula una vez y los comparte con
+    cuerpos_macizos, que si no repite el soldado, la division y los cascos
+    convexos enteros sobre los mismos cuerpos.
+
+    `tipos` es {indice de cuerpo: 'muro'} para cuando el archivo lo DICE en vez
+    de haber que deducirlo de la normal: un .ifc trae `IFCWALL` escrito (ver
+    ifc.py). Solo se pisa lo que venga en el diccionario; el resto sigue
+    saliendo de `clasificar`.
+
+    `superficies=False` apaga el repliegue de "modelo de caras sin espesor".
+    Ese repliegue existe para rescatar modelos donde deducir las placas por
+    geometria fallo, y **con un archivo que trae la semantica escrita hay que
+    apagarlo**: en el `cira`, los 311 solidos del IFC daban 237 placas cuyo
+    area suma menos del 15% del area de la malla --normal, la malla cuenta las
+    DOS caras de cada solido y la placa es una sola seccion-- asi que el
+    repliegue se disparaba, tiraba las 237 y las cambiaba por 678 parches de
+    superficie sin tipo ni planta. O sea que el .ifc terminaba adivinando igual
+    que un STL.
+    """
     # sin soldar, un OBJ real se parte en miles de cuerpos de dos triangulos y
     # ninguno llega a placa
-    mesh = _soldar(mesh)
-    cuerpos = mesh.split(only_watertight=False)
-    if len(cuerpos) <= 1:
-        cuerpos = [mesh]
+    mesh, cuerpos, astillas = (preparado if preparado is not None
+                               else preparar_cuerpos(mesh))
 
     placas, descartados = [], []
+    # las que ni se construyeron: el alumno ve este conteo, tiene que cuadrar
+    descartados.extend((i, 'astilla degenerada (%d caras)' % n) for i, n in astillas)
     for idx, c in enumerate(cuerpos):
         if len(c.faces) < 4 or c.area < 1e-6:
             descartados.append((idx, 'astilla degenerada (%d caras)' % len(c.faces)))
             continue
-        try:
-            ejes, ext, centro = _obb(c)
-        except Exception as e:
+        caja = obbs[idx] if obbs is not None else None
+        if caja is None:
+            try:
+                caja = _obb(c)
+            except Exception as e:
+                caja = e
+        if isinstance(caja, Exception):
             # cuerpos degenerados (vertices colineales) revientan oriented_bounds
-            descartados.append((idx, 'caja orientada no calculable: %s' % e))
+            descartados.append((idx, 'caja orientada no calculable: %s' % caja))
             continue
+        ejes, ext, centro = caja
         esp, medio, largo = ext
         if largo <= 1e-9 or esp / max(largo, 1e-9) > RAZON_PLACA or medio < 1e-6:
             descartados.append((idx, 'no es lamina (%.2f x %.2f x %.2f m)' % (esp, medio, largo)))
@@ -454,7 +572,8 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
 
         placas.append({
             'i': len(placas),
-            'tipo': clasificar(n),
+            'cuerpo': idx,
+            'tipo': (tipos or {}).get(idx) or clasificar(n),
             'normal': n,
             'espesor_real': float(esp),
             'poly': poly,               # metros, en el plano local
@@ -468,7 +587,7 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
     # Fallback: si casi no salio nada como solido, el modelo son caras sin
     # espesor. Se agrupan los parches coplanares y se les da espesor sintetico.
     area_solida = sum(p['area'] for p in placas)
-    if len(placas) < 3 or area_solida < 0.15 * float(mesh.area):
+    if superficies and (len(placas) < 3 or area_solida < 0.15 * float(mesh.area)):
         sup, motivo = _placas_de_superficies(mesh, min_area_sup, t_modelo=t_modelo)
         if len(sup) > len(placas):
             for i, p in enumerate(sup):
@@ -750,9 +869,20 @@ def huellas_en_losas(placas, t_min, junta_m=0.60, alto_m=0.15):
     niveles = niveles_de_piso(placas, junta_m)
     if not niveles:
         return 0
-    z_tope = max(float(np.max((p['a_mundo'] @ np.array(
-        [[c[0], c[1], 0.0, 1.0] for c in p['poly'].exterior.coords]).T)[2]))
-        for p in placas)
+    # Segunda red: aunque _figura ya entrega siempre un Polygon, una sola placa
+    # rara no debe apagar el grabado de TODAS las losas. Antes cualquier
+    # geometria sin `.exterior` reventaba aqui y, como la llamada va dentro de un
+    # try/except, la planta se perdia entera con un aviso gris.
+    z_tope = None
+    for p in placas:
+        borde = _borde_exterior(p['poly'])
+        if borde is None:
+            continue
+        z = float(np.max((p['a_mundo'] @ np.array(
+            [[c[0], c[1], 0.0, 1.0] for c in borde]).T)[2]))
+        z_tope = z if z_tope is None else max(z_tope, z)
+    if z_tope is None:
+        return 0
 
     marcadas = 0
     for losa in losas:
@@ -791,12 +921,24 @@ def huellas_en_losas(placas, t_min, junta_m=0.60, alto_m=0.15):
     return marcadas
 
 
-def asignar_planta(placas, junta_m=0.60):
+def asignar_planta(placas, junta_m=0.60, plantas=None):
     """Marca cada placa con la planta a la que pertenece (1 = la de mas abajo).
 
     Sirve para no revolver las plantas en la misma hoja: una hoja con los muros
     de la baja y de la alta mezclados no hay quien la arme.
+
+    `plantas` es {indice de cuerpo: numero de planta} cuando el archivo lo trae
+    escrito --el .ifc mete cada elemento en su `IfcBuildingStorey`-- y entonces
+    no hay que agrupar losas por su Z. Es mejor dato: agrupar por Z encadena
+    los niveles cuando el edificio tiene medios pisos o rampas.
     """
+    if plantas:
+        usados = set()
+        for p in placas:
+            k = plantas.get(p.get('cuerpo'))
+            p['planta'] = k if k else 1
+            usados.add(p['planta'])
+        return max(usados) if usados else 1
     niveles = niveles_de_piso(placas, junta_m)
     if not niveles:
         for p in placas:

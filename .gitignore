@@ -7,9 +7,11 @@ out_real/
 pruebas/
 
 .cache_skp/
+.cache_ifc/
 out_merida*/
 .venv/
 .venv_test/
 out/
 out_casa/
 out_solido/
+out_ifc/

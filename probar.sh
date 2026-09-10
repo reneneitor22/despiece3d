@@ -9,18 +9,18 @@ PY=./.venv/bin/python
 T="$(mktemp -d)"
 mkdir -p out
 
-echo "   1/4 generando la casa de ejemplo"
+echo "   1/5 generando la casa de ejemplo"
 "$PY" gen_casa.py >/dev/null
 
-echo "   2/4 despiece + exportacion"
+echo "   2/5 despiece + exportacion"
 "$PY" cortar_casa.py out/casa_prueba.stl --escala 100 --espesor 2 --hoja 500x700 --salida "$T" >/dev/null
 
-echo "   3/4 revisando archivos"
+echo "   3/5 revisando archivos"
 for f in casa_prueba_hoja01.dxf casa_prueba_hoja01.dwg casa_prueba.pdf casa_prueba_hoja01.svg; do
   [ -s "$T/$f" ] || { echo "FALLA: no salio $f"; exit 1; }
 done
 
-echo "   4/4 revisando que el DWG traiga dibujo (no vacio)"
+echo "   4/5 revisando que el DWG traiga dibujo (no vacio)"
 if command -v dwgread >/dev/null 2>&1; then
   dwgread -O DXF -o "$T/_chk.dxf" "$T/casa_prueba_hoja01.dwg" >/dev/null 2>&1 \
     || { echo "FALLA: el DWG no se puede leer"; exit 1; }
@@ -34,5 +34,11 @@ if command -v dwgread >/dev/null 2>&1; then
 else
   echo "       (sin dwgread: brew install libredwg para revisar el DWG)"
 fi
+
+echo "   5/5 revisando el lector de IFC y el rechazo de RVT"
+# Va en la prueba de humo a proposito: el motor de geometria de ifcopenshell es
+# un binario compilado, y de esos solo se sabe si sirven corriendolos en un
+# .venv limpio. Lo mismo paso con mapbox_earcut y rtree (ver README).
+"$PY" -m unittest -q test_ifc 2>&1 | tail -3
 
 echo "OK — la prueba paso. Salida en: $T"

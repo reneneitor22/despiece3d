@@ -4,7 +4,9 @@ Convierte un modelo 3D en piezas planas cortables, numeradas y acomodadas en hoj
 Salida: **DXF** y **DWG** (corte láser), **PDF** a tamaño real y **SVG/HTML**
 (imprimir y cortar a mano).
 
-Lee STL, OBJ, PLY, GLB, DAE, **SKP** (SketchUp) y **FBX** (Autodesk).
+Lee **IFC** (ArchiCAD, Revit, Allplan), STL, OBJ, PLY, GLB, DAE, **SKP**
+(SketchUp) y **FBX** (Autodesk). El `.rvt` de Revit no se puede leer —formato
+cerrado— y el programa lo reconoce para decir cómo exportar el IFC.
 
 ```bash
 cd ~/Desktop/Claude/despiece3d
@@ -67,12 +69,74 @@ material y abre hueco donde el acomodo mete las piezas chicas.
 python3 cortar.py terreno.stl --escala 500 --espesor 3 --hoja 500x700
 ```
 
-## Los dos formatos que no lee ninguna librería de mallas
+## Los formatos que no lee ninguna librería de mallas
 
-Un alumno no exporta STL: entrega el archivo de su programa. Los dos que llegan
-son SKP y FBX, y trimesh no sabe que existen. Cada uno tiene su lector aparte
-(`skp.py`, `fbx.py`) y los dos entregan lo mismo: **metros y Z arriba**, que es
-lo único que el resto del programa entiende.
+Un alumno no exporta STL: entrega el archivo de su programa. Los que llegan son
+IFC, SKP y FBX, y trimesh no sabe que existen. Cada uno tiene su lector aparte
+(`ifc.py`, `skp.py`, `fbx.py`) y los tres entregan lo mismo: **metros y Z
+arriba**, que es lo único que el resto del programa entiende.
+
+### IFC — el único que entra con semántica
+
+Es la entrada buena, y no por la geometría sino por lo que trae **escrito**. Los
+otros formatos son mallas: el programa tiene que deducir qué es cada cuerpo por
+su caja orientada y por su normal, o sea adivinar, y adivinar se equivoca solo
+cuando el modelo no está bien hecho. El IFC dice `IFCWALL`, dice a qué
+`IfcBuildingStorey` pertenece cada elemento y dice cuál es un sofá.
+
+Lo que cambia, medido en `202103162102_cira.ifc` (IFC4, 638 elementos):
+
+| lo que hacía adivinando | lo que hace con el IFC |
+|---|---|
+| partía la malla por conectividad: 91 `IfcWall` daban **531 cuerpos**, porque un muro real se exporta **por capas de material** (8 sólidos encimados) más basura de milímetros de restar los huecos | un elemento es **un cuerpo**: 311 elementos → 311 cuerpos, y la caja orientada mide el muro completo, que es lo que se corta en cartón |
+| clasificaba por la normal, así que una fachada inclinada salía «techo» | `IFCWALL` es muro aunque esté a 20° |
+| agrupaba losas por su Z para inventar los niveles | las plantas salen del archivo, con su nombre |
+| 153 muebles, 27 ventanas y 17 puertas entraban como cuerpos que después había que descartar uno por uno | no entran: **327 elementos** se quedan fuera desde el principio |
+
+**Losa contra techo la sigue decidiendo la geometría, a propósito.** Un `IfcRoof`
+plano de azotea es una losa para armar la maqueta, y llamarlo «techo» lo saca de
+`huellas_en_losas`, que graba la planta de los muros sobre las losas. Así que el
+IFC decide *si es muro* y la normal decide entre losa y techo.
+
+Dos cosas que **no** hay que tocar, y está medido: IfcOpenShell aplica la unidad
+declarada en `IfcUnitAssignment` y entrega **metros SI** pase lo que pase
+(`20200205Model_PNO.ifc` está guardado en milímetros y sale como 125.48 × 6.36 ×
+3.50 m, la nave que es), y el eje de arriba en IFC es Z por definición del
+formato. Es el único de los tres que entra derecho.
+
+Los huecos ya vienen restados —IfcOpenShell aplica los `IfcOpeningElement` sobre
+el muro que los recibe— y por eso el `IfcOpeningElement` suelto se descarta: es
+el volumen del hueco, no una pieza.
+
+Meshear cuesta lo suyo (9.9 s los 206 muros y losas del `cira`) y el CLI lo
+repite en cada corrida, así que se guarda en `.cache_ifc/` con la firma del
+archivo en el nombre: 9.9 s → 0.7 s.
+
+**Trampa que costó encontrar:** el repliegue de «modelo de caras sin espesor» de
+`extraer_placas` se disparaba con el IFC y tiraba todo el trabajo. Los 311
+sólidos daban 237 placas cuya área suma menos del 15% del área de la malla
+—normal: la malla cuenta las **dos** caras de cada sólido y la placa es una sola
+sección— así que el repliegue las cambiaba por 678 parches de superficie **sin
+tipo ni planta**, y el .ifc terminaba adivinando igual que un STL. Con semántica
+ese repliegue va apagado (`superficies=False`).
+
+### RVT (Revit) — no se lee, y no es que falte una librería
+
+Es formato cerrado de Autodesk y **no existe lector libre**: el único SDK que
+abre el archivo por fuera es el BIM/Revit de la Open Design Alliance, comercial
+y por instalación. `openskp` existe para SketchUp e `ifcopenshell` para IFC;
+para `.rvt` no hay equivalente.
+
+Lo que sí se hace es no dejar al alumno con un error feo. El `.rvt` es un
+contenedor OLE (`D0 CF 11 E0 A1 B1 1A E1`) con un flujo de texto,
+`BasicFileInfo`, en UTF-16 con la versión con que se guardó. Se lee, y se
+contesta con su versión en la mano y los cinco clics del menú de Revit para
+sacar el IFC —que Revit exporta de fábrica, sin comprar ni instalar nada—.
+
+El contenido de ese flujo **no está al principio del archivo**: en los 21 `.rvt`
+medidos, el nombre `BasicFileInfo` cae en el offset 4992 (la tabla de directorio
+del OLE) pero su contenido cayó al final. Leyendo sólo el primer mega, 6 de 21
+se quedaban sin versión; se recorre el archivo con `mmap`, que no lo carga.
 
 ### SKP (SketchUp)
 
@@ -274,6 +338,8 @@ Debajo del propio kerf del láser (0.15 mm), o sea: arma.
 | `exportar.py` | DXF (capas CORTE / GRABADO / HOJA), DWG, PDF, SVG, guías HTML |
 | `previsualizar.py` | rasteriza una hoja a PNG (revisar sin depender del navegador) |
 | `app.py` | servidor local + interfaz web |
+| `ifc.py` | leer IFC **con semántica**: tipo, planta y qué no va en la maqueta |
+| `rvt.py` | reconocer un archivo de Revit, sacarle la versión y decir cómo exportar IFC |
 | `skp.py` / `fbx.py` | leer SketchUp y FBX: ejes, unidades y caché |
 | `verificar_casa.py` / `verificar.py` | auditorías |
 
@@ -281,14 +347,20 @@ Debajo del propio kerf del láser (0.15 mm), o sea: arma.
 
 ```bash
 pip3 install --user trimesh shapely ezdxf networkx scipy rtree pillow numpy rectpack \
-                    reportlab openskp
+                    reportlab openskp ifcopenshell
 brew install assimp libredwg          # solo para FBX y para el DWG
 ```
 
-`reportlab` es para el PDF, `openskp` para leer SketchUp, `assimp` para leer
-FBX y `libredwg` para escribir DWG. Sin los tres últimos el programa sigue
-sirviendo: avisa qué falta y entrega DXF, que es lo que lee casi toda máquina
-de corte.
+`reportlab` es para el PDF, `openskp` para leer SketchUp, `ifcopenshell` para
+leer IFC, `assimp` para leer FBX y `libredwg` para escribir DWG. Sin los
+últimos el programa sigue sirviendo: avisa qué falta y entrega DXF, que es lo
+que lee casi toda máquina de corte.
+
+`ifcopenshell` trae su propio motor de geometría **compilado** (~42 MB de rueda)
+y se baja de PyPI como cualquier otra: para el IFC **no** hace falta brew. Por
+ser binario, su prueba va dentro de `probar.sh`: de esos sólo se sabe si sirven
+corriéndolos en un `.venv` limpio, que es la lección que dejaron `mapbox_earcut`
+y `rtree`.
 
 ## Modelos bajados de internet
 
@@ -313,9 +385,11 @@ modelo**. Una placa de 1 m² es una pieza de 10×10 mm a 1:100 y de 2×2 mm a 1:
 
 ## Pendientes
 
-1. **Entrada con semántica**: hoy lee mallas (STL/OBJ/DAE/PLY/GLB) y deduce las placas
-   por geometría. Con **IFC** (ArchiCAD/Revit) o **.3dm** (Rhino) sabría que algo *es*
-   un muro, y dejaría de depender de que el modelo esté bien hecho.
+1. **Entrada con semántica**: ~~IFC~~ hecho (ver arriba). Falta **.3dm** (Rhino),
+   que también trae sólidos con capas y nombres. Y del IFC falta aprovechar lo
+   que todavía se ignora: el material de cada elemento (`IfcMaterialLayerSet`
+   dice de qué está hecho el muro y en qué capas) y los `IfcSpace`, que darían
+   los cuartos sin deducirlos.
 2. **El muro que ATRAVIESA la losa.** Es lo que sostiene la interferencia que queda
    (Bauhaus completa 1.23%, envolvente 0.15%, casa de prueba 0.02%). Ya se descartó
    que fuera la cancelación de uniones: midiendo un piso solo —29 placas, 31

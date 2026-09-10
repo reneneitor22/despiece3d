@@ -87,6 +87,39 @@ class TestPOST(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn('no soportado', d['error'])
 
+    def test_ifc_entra_por_la_pantalla_y_sale_con_semantica(self):
+        try:
+            import ifcopenshell            # noqa: F401
+        except ImportError:
+            self.skipTest('sin ifcopenshell')
+        import test_ifc
+        campos = {'modo': 'estructura', 'unidades': 'mm', 'modo_escala': 'escala',
+                  'escala': '50', 'espesor': '2', 'hoja': '500x700'}
+        # unidades='mm' a proposito: el .ifc trae la suya y el selector no manda
+        ctype, cuerpo = multipart(campos, ('casa.ifc',
+                                           test_ifc._ifc_de_prueba().encode()))
+        status, d = self._post(ctype, cuerpo)
+        self.assertEqual(status, 200, d)
+        self.assertEqual(d['por_tipo'], {'muro': 2, 'losa': 1, 'techo': 0}, d)
+        self.assertTrue(any('IFC trae los elementos nombrados' in a
+                            for a in d.get('avisos', [])), d.get('avisos'))
+        log = os.path.join(dbg.JOBS_DIR, d['job'], 'debug.log')
+        with open(log, encoding='utf-8') as f:
+            cargado = [json.loads(l) for l in f
+                       if l.strip() and json.loads(l)['evento'] == 'modelo.cargado'][0]
+        # si el 'mm' del selector hubiera ganado, el muro de 4 m entraria como
+        # uno de 4 mm y no quedaria ni una pieza cortable
+        self.assertGreater(max(cargado['extents']), 3.5)
+
+    def test_rvt_se_rechaza_diciendo_como_exportar_ifc(self):
+        import test_ifc
+        ctype, cuerpo = multipart({'modo': 'estructura'},
+                                  ('casa.rvt', test_ifc._rvt_de_prueba('2024')))
+        status, d = self._post(ctype, cuerpo)
+        self.assertEqual(status, 400)
+        self.assertIn('Revit 2024', d['error'])
+        self.assertIn('Exportar', d['error'])
+
 
 if __name__ == '__main__':
     unittest.main()

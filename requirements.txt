@@ -11,9 +11,13 @@ ezdxf==1.4.2
 reportlab==4.5.1
 pillow==11.3.0
 openskp==1.1.0
+ifcopenshell==0.8.5
 
 # Las dos que trimesh NO pide sola y sin las cuales el despiece truena:
 #   mapbox_earcut -> "No available triangulation engine!" al extruir poligonos
 #   rtree         -> "No module named 'rtree'" al armar el arbol de contornos
 mapbox_earcut==2.0.0
 rtree==1.4.1
+
+# ifcopenshell trae su propio motor de geometria compilado (~42 MB de rueda) y
+# se baja de PyPI como cualquier otra: para el .ifc NO hace falta brew.

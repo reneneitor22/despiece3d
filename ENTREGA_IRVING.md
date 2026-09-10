@@ -56,5 +56,7 @@ git pull
 - **python@3.11** — el motor; queda aparte, no toca el Python del sistema.
 - **assimp** — para leer FBX.
 - **libredwg** — para escribir el DWG.
+- **ifcopenshell** — para leer IFC. Se baja con las demás librerías de Python,
+  no hace falta nada de Homebrew para el IFC.
 - Las librerías de Python van dentro de la carpeta `.venv` del propio proyecto.
   Si borras la carpeta del proyecto, no queda nada regado.

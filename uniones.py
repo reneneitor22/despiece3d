@@ -240,15 +240,35 @@ def _tejer(placas, c, i_ranura, i_espiga, t, diente_obj, holgura_modelo):
     return modo, (n + 1) // 2, aportes, marcas
 
 
+def _mayor_poligono(g):
+    """La placa mas grande que haya adentro, SIEMPRE como Polygon.
+
+    `difference()` no devuelve siempre un poligono: cuando el corte roza un borde
+    entrega una GeometryCollection con poligonos Y lineas sueltas. Eso se colaba
+    tal cual hasta `huellas_en_losas`, que le pide `.exterior` --que solo tiene un
+    Polygon-- y tronaba con "'GeometryCollection' object has no attribute
+    'exterior'". Como el grabado de planta va envuelto en try/except, no se caia
+    la corrida: se apagaba EL GRABADO ENTERO y solo quedaba un aviso gris.
+
+    Devolver siempre un Polygon (vacio si no quedo nada) le quita el problema a
+    todos los que consumen 'poly', no nada mas al que se quejo.
+    """
+    if g is None or g.is_empty:
+        return Polygon()
+    partes = list(g.geoms) if hasattr(g, 'geoms') else [g]
+    poligonos = [p for p in partes if p.geom_type == 'Polygon' and not p.is_empty]
+    if not poligonos:
+        return Polygon()
+    return max(poligonos, key=lambda x: x.area)
+
+
 def _figura(base, mas, menos):
     g = base
     if mas:
         g = unary_union([g] + mas).buffer(0)
     if menos:
         g = g.difference(unary_union(menos).buffer(0))
-    if g.geom_type == 'MultiPolygon':
-        g = max(g.geoms, key=lambda x: x.area)
-    return g
+    return _mayor_poligono(g)
 
 
 def _area_con(placas, i, tejidos, saltar=None):

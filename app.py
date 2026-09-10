@@ -33,7 +33,11 @@ import dbg
 dbg.JOBS_DIR = JOBS
 MAX = 200 * 1024 * 1024
 MAX_MB = MAX // (1024 * 1024)   # el tope se escribe UNA vez: pantalla y error salen de aqui
-EXT_OK = {'.stl', '.obj', '.ply', '.glb', '.gltf', '.dae', '.off', '.3mf', '.skp', '.fbx'}
+EXT_OK = {'.stl', '.obj', '.ply', '.glb', '.gltf', '.dae', '.off', '.3mf', '.skp',
+          '.fbx', '.ifc'}
+# Formatos que se reconocen para NO leerlos: en vez de "formato no soportado"
+# se contesta con la version del archivo y como sacarle el IFC (ver rvt.py).
+EXT_CERRADA = {'.rvt', '.rfa', '.rte', '.rft'}
 
 MOD = os.path.join(BASE, 'modelos_prueba')
 # Ejemplos listos para probar sin buscar archivos. Los sinteticos siempre estan;
@@ -286,8 +290,18 @@ class H(BaseHTTPRequestHandler):
             nombre_orig, datos = archivo
             ext = os.path.splitext(nombre_orig)[1].lower()
             dbg.log('validar', ext=ext, ok=(ext in EXT_OK))
+            if ext in EXT_CERRADA:
+                # Hay que guardarlo para poder leerle la version adentro.
+                import rvt as _rvt
+                tmp = os.path.join(carpeta, 'cerrado' + ext)
+                open(tmp, 'wb').write(datos)
+                err = {'error': _rvt.rechazo(tmp)}
+                dbg.log('validar.cerrado', nivel='error', ext=ext,
+                        version=_rvt.version_rvt(tmp)[0])
+                return self._send(400, 'application/json', json.dumps({**err, 'job': job}))
             if ext not in EXT_OK:
-                err = {'error': 'formato %s no soportado. Lee STL, OBJ, DAE, PLY, GLB, SKP y FBX.' % (ext or '?')}
+                err = {'error': 'formato %s no soportado. Lee IFC, STL, OBJ, DAE, PLY, '
+                                'GLB, SKP y FBX.' % (ext or '?')}
                 return self._send(400, 'application/json', json.dumps({**err, 'job': job}))
 
             ruta_modelo = os.path.join(carpeta, 'modelo' + ext)
@@ -439,10 +453,11 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
         dbg.log('procesar.error', nivel='error', motivo='sin_geometria')
         return {'error': 'el archivo no trae geometria legible'}
     import fbx as _fbx
-    if _skp.es_skp(ruta_modelo) or _fbx.es_fbx(ruta_modelo):
-        # SketchUp guarda en pulgadas y el FBX trae su unidad anotada; los dos
-        # lectores ya entregan metros, asi que lo que haya escogido el usuario
-        # en el selector no aplica.
+    import ifc as _ifc
+    if _skp.es_skp(ruta_modelo) or _fbx.es_fbx(ruta_modelo) or _ifc.es_ifc(ruta_modelo):
+        # SketchUp guarda en pulgadas, el FBX trae su unidad anotada y el IFC la
+        # declara en IfcUnitAssignment; los tres lectores ya entregan metros,
+        # asi que lo que haya escogido el usuario en el selector no aplica.
         unidades = 'm'
 
     modo_escala = campos.get('modo_escala', 'escala')
@@ -459,7 +474,10 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
     cfg = Config(escala, espesor, kerf, (hw, hh), unidades_modelo=unidades, vaciar=vaciar)
 
     if campos.get('modo', 'curvas') == 'estructura':
-        return _estructural(m, cfg, carpeta, job, nombre, campos)
+        r = _estructural(m, cfg, carpeta, job, nombre, campos)
+        if isinstance(r, dict) and r.get('ok'):
+            r['segundos'] = round(time.perf_counter() - _t0, 1)
+        return r
 
     solidificado = False
     if not m.is_watertight:
@@ -542,6 +560,7 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
             archivos=[{'nombre': a['nombre']} for a in _descargables(carpeta, job)])
 
     return {'ok': True, 'job': job,
+            'segundos': round(time.perf_counter() - _t0, 1),
             'dwg': dwg, 'capas': {k: v['capa'] for k, v in ops.items()},
             'archivos': _descargables(carpeta, job),
             'guia': '/r/%s/guia.html' % job,
@@ -711,6 +730,8 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
 PAGINA = r"""<!doctype html><html lang="es"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Despiece 3D</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2315151a'/%3E%3Crect x='10' y='10' width='12' height='12' rx='2.6' fill='none' stroke='%23fff' stroke-width='2.4'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2315151a'/%3E%3Crect x='10' y='10' width='12' height='12' rx='2.6' fill='none' stroke='%23fff' stroke-width='2.4'/%3E%3C/svg%3E">
 <style>
 /* Claro siempre, a proposito: el archivo que sale de aqui se manda a un taller
    y se paga. Una pantalla negra se lee como herramienta de juguete; el papel
@@ -736,6 +757,8 @@ header{margin-bottom:34px}
 .marca i{width:26px;height:26px;border-radius:7px;background:var(--txt);position:relative;flex:none}
 .marca i::after{content:"";position:absolute;inset:7px;border:1.5px solid #fff;border-radius:2px}
 .marca span{font-size:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--tenue)}
+.marca .by{font-size:11px;font-weight:500;letter-spacing:.03em;text-transform:none;color:var(--tenue2);
+ border-left:1px solid var(--linea2);padding-left:10px}
 h1{font-size:36px;line-height:1.12;letter-spacing:-.03em;margin:0 0 10px;font-weight:640}
 .lead{color:var(--tenue);margin:0;max-width:62ch;font-size:16px}
 .card{background:var(--card);border:1px solid var(--linea);border-radius:16px;padding:24px;
@@ -746,7 +769,14 @@ h1{font-size:36px;line-height:1.12;letter-spacing:-.03em;margin:0 0 10px;font-we
  cursor:pointer;transition:border-color .15s,background .15s;background:#fcfcfa}
 .drop:hover,.drop.on{border-color:var(--acento);background:var(--acentobg)}
 .drop b{display:block;font-size:16px;margin-bottom:4px;font-weight:600}
+/* Ese `b` de arriba es el titulo "Arrastra tu modelo aqui" y es de BLOQUE. Un
+   <b> dentro de los renglones chicos --el "IFC" que se quiere resaltar-- lo
+   heredaba: se iba a su propio renglon y a 16px, y la linea quedaba partida en
+   tres pedazos sin sentido. Se devuelve a inline solo ahi dentro. */
+.drop small b{display:inline;font-size:inherit;margin:0;font-weight:600}
 .drop small{color:var(--tenue2);font-size:12.5px}
+.drop small.nota-ifc{display:block;max-width:34em;margin:10px auto 0;font-size:12px;
+     line-height:1.5;opacity:.85}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:16px;margin-top:20px}
 label{display:block;font-size:11.5px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;
  color:var(--tenue2);margin-bottom:6px}
@@ -831,7 +861,10 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
 .progpie{display:flex;justify-content:space-between;gap:14px;margin-top:7px;
  font-size:12.5px;color:var(--tenue2)}
 .progpie span:first-child{color:var(--tenue);font-weight:550}
-.err{color:var(--corte);font-size:14px;margin-top:14px}
+.err{color:var(--corte);font-size:14px;margin-top:14px;
+     /* El rechazo de un .rvt son siete renglones con los pasos del menu de
+        Revit; sin esto textContent los pega todos en un parrafo. */
+     white-space:pre-line;text-align:left;line-height:1.5}
 [hidden]{display:none!important}
 .par{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 16px}
 @media(max-width:640px){.par{grid-template-columns:1fr}.wrap{padding-top:34px}h1{font-size:29px}
@@ -844,7 +877,7 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
 </style>
 <div class="wrap">
 <header>
- <div class="marca"><i></i><span>Despiece 3D</span></div>
+ <div class="marca"><i></i><span>Despiece 3D</span><span class="by">by Irving y René</span></div>
  <h1>Del modelo 3D al archivo de corte.</h1>
  <p class="lead">Sube tu maqueta y baja el archivo listo para el taller: piezas numeradas,
  acomodadas en la hoja, con sus capas de corte, grabado y marcado y la tabla de corte adentro.
@@ -862,8 +895,11 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
   El modelo debe traer los muros con <b>espesor</b>, no como caras sueltas.</p>
  <div class="drop" id="drop">
   <b id="dropTxt">Arrastra tu modelo aquí</b>
-  <small>STL · OBJ · DAE · PLY · GLB · SKP · FBX — hasta {{MAX_MB}} MB</small>
-  <input type="file" id="file" accept=".stl,.obj,.dae,.ply,.glb,.gltf,.off,.3mf,.skp,.fbx" hidden>
+  <small><b>IFC</b> · STL · OBJ · DAE · PLY · GLB · SKP · FBX — hasta {{MAX_MB}} MB</small>
+  <small class="nota-ifc">Si tu proyecto está en Revit o ArchiCAD, exporta <b>IFC</b>: trae
+   escrito cuál elemento es muro y a qué planta va, y el despiece sale mejor que con
+   cualquier otro formato.</small>
+  <input type="file" id="file" accept=".ifc,.stl,.obj,.dae,.ply,.glb,.gltf,.off,.3mf,.skp,.fbx,.rvt" hidden>
  </div>
 
  <div class="grid">
@@ -1243,7 +1279,8 @@ async function correrEjemplo(boton){
                         {'Content-Type':'application/json'});
     let d;try{d=JSON.parse(r.text);}catch(_){d={error:'respuesta no-JSON del servidor'};}
     dbgResultado({job:d.job,raw:JSON.stringify(d,null,2),
-      kv:{ejemplo:boton.dataset.id,'status HTTP':r.status,'tiempo total':r.ms+' ms'}});
+      kv:{ejemplo:boton.dataset.id,'status HTTP':r.status,'tiempo total':r.ms+' ms',
+          'export (servidor)':(d.segundos!=null?d.segundos+' s':'—')}});
     if(d.error){fallo(d.error);}else{pintar(d);}
   }catch(e){fallo('No se pudo procesar: '+e.message);}
   finally{
@@ -1297,7 +1334,8 @@ $('go').onclick=async()=>{
     dbgResultado({job:d.job,raw:JSON.stringify(d,null,2),
       kv:{archivo:archivo.name,
           'tamaño':(archivo.size/1048576).toFixed(2)+' MB',
-          'status HTTP':r.status,'tiempo total':r.ms+' ms'}});
+          'status HTTP':r.status,'tiempo total':r.ms+' ms',
+          'export (servidor)':(d.segundos!=null?d.segundos+' s':'—')}});
     if(d.error){fallo(d.error);return;}
     pintar(d);
   }catch(e){fallo('No se pudo procesar: '+e.message);}
@@ -1307,6 +1345,9 @@ $('go').onclick=async()=>{
 
 function fallo(msg){$('err').textContent=msg;$('err').hidden=false;}
 function kpi(v,t){return '<div class="kpi"><b>'+v+'</b><span>'+t+'</span></div>';}
+// Cuanto tardo el servidor en generar el archivo (sin contar la subida).
+function dur(s){if(s==null)return '—';return s<60?s+' s'
+  :Math.floor(s/60)+' m '+String(Math.round(s%60)).padStart(2,'0')+' s';}
 
 // El DWG no siempre sale --hace falta el ODA File Converter-- y eso el alumno
 // tiene que verlo aqui, no enterarse cuando el taller le diga que no abre.
@@ -1349,6 +1390,7 @@ function pintar(d){
    kpi('1:'+d.escala,'escala')+
    kpi(m[0]+'×'+m[1]+'×'+m[2],'maqueta (mm)')+
    kpi(Math.round(d.stats.material_cm2)+' cm²','material cortado')+
+   kpi(dur(d.segundos),'tardó en exportar')+
    '</div>'+avisos+bloqueEntrega(d)+
    leyenda(d,'grabado — silueta de la pieza de arriba')+
    d.svgs.map((s,i)=>'<div class="card hoja"><h3>Hoja '+(i+1)+' de '+d.svgs.length+'</h3>'+s+'</div>').join('');
@@ -1387,6 +1429,7 @@ function pintarEstructura(d){
    kpi(d.n_uniones,'uniones')+
    kpi(d.stats.n_hojas,'hojas')+
    kpi('1:'+d.escala,'escala')+
+   kpi(dur(d.segundos),'tardó en exportar')+
    '</div>'+avisos+bloqueEntrega(d)+
    '<div class="par"><div class="vista"><h4>Armada</h4>'+d.iso+'</div>'+
    '<div class="vista"><h4>Explotada</h4>'+d.iso_explotada+'</div></div>'+

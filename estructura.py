@@ -7,7 +7,7 @@ import shapely.affinity as aff
 
 from placas import (extraer_placas, nombrar, marcar_envolvente,
                     niveles_de_piso, cortar_por_piso, huellas_en_losas,
-                    asignar_planta)
+                    asignar_planta, preparar_cuerpos, tabla_obb)
 from uniones import detectar_contactos, aplicar_uniones, recortar_choques
 
 DIENTE_OBJ_MM = 12.0      # ancho buscado del diente, en mm de maqueta
@@ -44,7 +44,7 @@ MAX_REBANADAS = 120           # por cuerpo: mas que esto no lo pega nadie
 
 
 def cuerpos_macizos(mesh, cfg, razon=RAZON_PLACA_SOL, min_vol_mm3=MIN_VOL_MM3,
-                    max_lado=MAX_LADO_MODELO):
+                    max_lado=MAX_LADO_MODELO, preparado=None, obbs=None):
     """Los cuerpos que NO son lamina: escaleras, barandales, muebles, columnas.
 
     placas.py los descarta con razon, porque no hay forma de sacarles una placa:
@@ -55,21 +55,28 @@ def cuerpos_macizos(mesh, cfg, razon=RAZON_PLACA_SOL, min_vol_mm3=MIN_VOL_MM3,
     casa Bauhaus, dos bloques del 53% y 56% del modelo). Laminar eso son 444
     rebanadas de nada.
     """
-    from placas import _soldar, _obb
-    m = _soldar(mesh)
-    cuerpos = m.split(only_watertight=False)
-    if len(cuerpos) <= 1:
-        cuerpos = [m]
+    from placas import _obb, preparar_cuerpos
+    # `preparado` y `obbs` vienen de despiece_estructural: soldar el modelo,
+    # partirlo en cuerpos y sacarle la caja orientada a cada uno son los pasos
+    # mas caros del pipeline, y sin compartirlos se hacen DOS veces --una aqui y
+    # otra en extraer_placas-- sobre exactamente los mismos cuerpos.
+    _, cuerpos, _ = (preparado if preparado is not None
+                     else preparar_cuerpos(mesh))
     v_min = min_vol_mm3 / (cfg.a_mm ** 3)          # a unidades del modelo
     lado_tope = float(np.max(mesh.extents)) * max_lado
     macizos = []
-    for c in cuerpos:
+    for idx, c in enumerate(cuerpos):
         if len(c.faces) < 4 or c.area < 1e-9:
             continue
-        try:
-            _, ext, _ = _obb(c)
-        except Exception:
+        caja = obbs[idx] if obbs is not None else None
+        if caja is None:
+            try:
+                caja = _obb(c)
+            except Exception as e:
+                caja = e
+        if isinstance(caja, Exception):
             continue
+        _, ext, _ = caja
         esp, _, largo = ext
         if largo <= 1e-9 or esp / max(largo, 1e-9) <= razon:
             continue                                # es lamina: ya la vio placas.py
@@ -81,7 +88,7 @@ def cuerpos_macizos(mesh, cfg, razon=RAZON_PLACA_SOL, min_vol_mm3=MIN_VOL_MM3,
     return macizos
 
 
-def rebanar_solidos(mesh, cfg, prefijo='S'):
+def rebanar_solidos(mesh, cfg, prefijo='S', preparado=None, obbs=None):
     """Una escalera no se corta: se LAMINA. Se rebana en horizontal cada espesor
     de carton y se apilan las rebanadas, igual que el modo terreno.
 
@@ -89,7 +96,7 @@ def rebanar_solidos(mesh, cfg, prefijo='S'):
     mismo acomodo y a la misma guia.
     """
     from despiece import rebanar, armar_piezas, solidificar
-    macizos = cuerpos_macizos(mesh, cfg)
+    macizos = cuerpos_macizos(mesh, cfg, preparado=preparado, obbs=obbs)
     piezas, resumen = [], []
     for k, c in enumerate(macizos, 1):
         nombre = '%s%d' % (prefijo, k)
@@ -179,9 +186,25 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
                          piso=None, laminar_macizos=False, grabar_planta=True,
                          bastidor_mm=0.0):
     """Devuelve (piezas_mm, info). Las piezas traen 'poly' en mm de maqueta."""
+    # Un modelo con semantica (.ifc) ya trae partidos los cuerpos --cada
+    # elemento es uno-- y ademas dice cual es muro y a que planta pertenece.
+    # Ahi no hay nada que deducir: se usa lo que trae escrito. Ver ifc.py.
+    sem = (mesh.metadata or {}).get('semantica') or {}
+    if sem.get('cuerpos'):
+        preparado = (mesh, sem['cuerpos'], [])
+    else:
+        # Soldar el modelo y partirlo en cuerpos es, de lejos, el paso mas caro
+        # del pipeline. Lo piden extraer_placas y cuerpos_macizos por igual,
+        # sobre los MISMOS cuerpos: se hace una vez aqui y se les pasa hecho.
+        preparado = preparar_cuerpos(mesh)
+    obbs = tabla_obb(preparado[1])
+
     # el espesor del carton llevado a unidades del modelo: lo necesita el camino
     # de superficies para saber que dos caras ya no caben separadas
-    placas, descartados = extraer_placas(mesh, t_modelo=cfg.espesor_mm / cfg.a_mm)
+    placas, descartados = extraer_placas(mesh, t_modelo=cfg.espesor_mm / cfg.a_mm,
+                                         preparado=preparado, obbs=obbs,
+                                         tipos=sem.get('tipos'),
+                                         superficies=not sem.get('cuerpos'))
 
     # Lo que manda no es el tamano en el modelo, es el de la MAQUETA: una placa
     # de 1 m2 es una pieza de 10x10 mm a 1:100 y de 2x2 mm a 1:500. Abajo de
@@ -227,6 +250,18 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
     contactos, n_uniones = [], 0
     n_recortes, avisos_recorte = 0, []
     avisos_previos = []
+    if sem.get('resumen'):
+        r = sem['resumen']
+        avisos_previos.append(
+            'el %s trae los elementos nombrados: %d de ellos son muros, losas y '
+            'techos y %s no van en la maqueta (%s). Las plantas salen del '
+            'archivo: %s'
+            % (sem.get('origen', 'archivo').upper(), r.get('n_cuerpos', 0),
+               sum(r.get('fuera', {}).values()),
+               ', '.join('%d %s' % (n, c.replace('Ifc', '').lower())
+                         for c, n in sorted(r.get('fuera', {}).items(),
+                                            key=lambda x: -x[1])[:4]) or 'nada',
+               ', '.join(r.get('plantas', [])) or 'una'))
     if piso is not None:
         avisos_previos.append('cortado el piso %d de %d (losas a %s m)'
                               % (piso, len(niveles),
@@ -257,10 +292,11 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
     # Para maqueta la salida es laminarlos: rebanadas horizontales que se apilan.
     piezas_macizas, resumen_macizos = [], []
     if laminar_macizos:
-        piezas_macizas, resumen_macizos = rebanar_solidos(mesh, cfg)
+        piezas_macizas, resumen_macizos = rebanar_solidos(mesh, cfg,
+                                                          preparado=preparado)
     else:
         try:
-            n_mac = len(cuerpos_macizos(mesh, cfg))
+            n_mac = len(cuerpos_macizos(mesh, cfg, preparado=preparado))
         except Exception:
             n_mac = 0
         if n_mac:
@@ -284,7 +320,7 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
             n_huellas = huellas_en_losas(placas, t_min=t_mod)
         except Exception as e:
             avisos_previos.append('no se pudo grabar la planta en las losas: %s' % e)
-    asignar_planta(placas)
+    asignar_planta(placas, plantas=sem.get('plantas'))
 
     piezas = []
     for p in placas:
