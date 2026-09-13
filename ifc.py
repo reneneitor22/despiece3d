@@ -43,12 +43,14 @@ firma del archivo en el nombre, igual que el .skp.
 import hashlib
 import json
 import os
+import sys
 
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache_ifc')
 
+# Cambio local (12 sep 2026): "pip3 install --user" instalaba fuera del .venv.
 _AYUDA_INSTALAR = (
-    'para leer .ifc falta la libreria ifcopenshell:\n'
-    '    pip3 install --user ifcopenshell')
+    'para leer .ifc falta la libreria ifcopenshell. Instalala en el entorno del programa:\n'
+    '    "%s" -m pip install ifcopenshell' % sys.executable)
 
 # --- que se corta, que se lamina y que se tira -----------------------------
 # Lo que es lamina y va a placa. IfcPlate es la chapa de una fachada tipo muro
@@ -107,9 +109,14 @@ def es_ifc(ruta):
 
 
 def _firma(ruta):
-    st = os.stat(ruta)
-    crudo = '%s|%d|%d' % (os.path.abspath(ruta), st.st_size, int(st.st_mtime))
-    return hashlib.sha1(crudo.encode('utf-8')).hexdigest()[:12]
+    """Huella del contenido. Era ruta + tamaño + fecha, y en la pagina cada subida
+    vive en su carpeta: el cache nunca se reusaba y crecia sin fin. Cambio local,
+    12 sep 2026."""
+    h = hashlib.sha1()
+    with open(ruta, 'rb') as f:
+        for trozo in iter(lambda: f.read(1 << 20), b''):
+            h.update(trozo)
+    return h.hexdigest()[:12]
 
 
 def _callar_ruido_de_ifcopenshell():
@@ -207,6 +214,19 @@ def _malla_del_elemento(verts, caras, min_caras=4):
     return m if len(m.faces) >= min_caras else None
 
 
+def _del_tipo(f, clase):
+    """Los elementos de esa clase exacta, o nada si el esquema no la tiene.
+
+    Los *StandardCase y *ElementedCase de la lista son de IFC4. En un IFC2x3, que
+    es lo que Revit exporta de fabrica, by_type revienta con RuntimeError en vez
+    de regresar vacio, y el archivo entero no entraba.
+    """
+    try:
+        return f.by_type(clase, include_subtypes=False)
+    except RuntimeError:
+        return []
+
+
 def _leer(ruta, avisar=True, hilos=4):
     """Mesha el IFC y devuelve (cuerpos, tipos, plantas_por_cuerpo, resumen)."""
     import collections
@@ -216,7 +236,7 @@ def _leer(ruta, avisar=True, hilos=4):
     f = _abrir(ruta)
     clases = collections.Counter(e.is_a() for e in f.by_type('IfcProduct'))
     quiero = set(ESTRUCTURA) | MACIZOS
-    elementos = [e for c in sorted(quiero) for e in f.by_type(c, include_subtypes=False)]
+    elementos = [e for c in sorted(quiero) for e in _del_tipo(f, c)]
     fuera = {c: n for c, n in clases.items()
              if c not in quiero and not c.startswith(('IfcBuilding', 'IfcSite', 'IfcProject'))}
 

@@ -66,7 +66,7 @@ def cargar_modelo(ruta):
         raise SystemExit(_rvt.rechazo(ruta))
 
     import ifc as _ifc
-    if _ifc.es_ifc(ruta):
+    if _ifc.es_ifc(ruta) and not es_step(ruta):
         # El unico que entra con semantica: trae escrito que es cada elemento y
         # a que planta va, y ya viene en metros con Z arriba (ver ifc.py).
         return _ifc.cargar_ifc(ruta)
@@ -83,23 +83,353 @@ def cargar_modelo(ruta):
         # (ver fbx.py).
         return _fbx.cargar_fbx(ruta)
 
-    cabeza = open(ruta, 'rb').read(400).lstrip()
-    if cabeza[:1] == b'<' or b'<!DOCTYPE html' in cabeza or b'<html' in cabeza:
+    import dxf as _dxf
+    if _dxf.es_dwg(ruta) or _dxf.es_dxf(ruta):
+        # AutoCAD: mallas bloque por bloque, y los solidos con AcCoreConsole si
+        # hay AutoCAD en la maquina (ver dxf.py). Cambio local, 11 sep 2026.
+        return _dxf.cargar_dxf(ruta)
+
+    import rhino as _rhino
+    if _rhino.es_3dm(ruta):
+        # Rhino: mallas de render; las caras planas sin malla se triangulan
+        # aqui (ver rhino.py). Cambio local, 11 sep 2026.
+        return _rhino.cargar_3dm(ruta)
+
+    ext = os.path.splitext(ruta)[1].lower()
+    crudo = open(ruta, 'rb').read(16384)
+    cabeza = crudo[:400].lstrip()
+    if ext != '.3mf' and es_comprimido(crudo):
+        # El .zip o .rar tal como lo baja el alumno: se abre y se usa el modelo de
+        # adentro (el .3mf tambien es ZIP, pero ese lo lee trimesh).
+        # Se desempaca en una carpeta temporal que se borra en cuanto el modelo
+        # esta en memoria (cambio local, 12 sep 2026: antes se quedaba en $TMPDIR).
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix='despiece_zip_')
+        try:
+            interior, aviso = desempacar(ruta, tmp)
+            m = cargar_modelo(interior)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        if aviso:
+            m.metadata.setdefault('despiece_avisos', []).append(aviso)
+        return m
+    minus = crudo.lower()
+    # Todo .dae es XML y empieza con "<": antes se tomaba por pagina web y el DAE
+    # de SketchUp nunca entro (casa del amigo, 10 sep).
+    es_collada = b'<collada' in minus or ext == '.dae'
+    if not es_collada and (cabeza[:1] == b'<' or b'<!doctype html' in minus
+                           or b'<html' in minus):
+        if b'<svg' in minus:
+            raise SystemExit('esto es un dibujo 2D (SVG), no un modelo 3D: %s' % ruta)
         raise SystemExit('esto no es un modelo 3D, es una pagina web guardada con '
                          'nombre de modelo. Vuelve a bajarlo desde el boton de '
                          'descarga del sitio: %s' % ruta)
-    if cabeza[:2] == b'PK':
-        raise SystemExit('esto es un ZIP. Descomprimelo y pasa el modelo de adentro: %s'
-                         % ruta)
 
     try:
-        m = trimesh.load(ruta, force='mesh')
+        if ext in ('.step', '.stp'):
+            m = trimesh.load(ruta, force='mesh', **_tolerancia_step(ruta))
+        else:
+            m = trimesh.load(ruta, force='mesh')
     except Exception as e:
-        raise SystemExit('no se pudo leer %s (%s). Formatos que si lee: '
-                         'IFC, STL, OBJ, PLY, GLB, DAE, SKP, FBX.' % (ruta, e))
+        if ext == '.gltf' and (isinstance(e, FileNotFoundError) or 'No such file' in str(e)):
+            raise SystemExit('el .gltf guarda su geometria en un archivo aparte (.bin) que no '
+                             'llego. Sube el .glb (en Blender: Exportar > glTF Binary) o un ZIP '
+                             'con el .gltf y su .bin: %s' % ruta)
+        raise SystemExit('no se pudo leer %s (%s). Formatos que si lee: IFC, SKP, 3DM, '
+                         'DWG, DXF, FBX, DAE, OBJ, STL, PLY, GLB, STEP, 3MF y ZIP.' % (ruta, e))
     if m is None or m.is_empty or len(m.faces) == 0:
         raise SystemExit('el archivo se leyo pero no trae geometria: %s' % ruta)
+    if es_collada:
+        m = _ajustar_collada(m, ruta)
+    elif ext == '.obj':
+        m = _parar_si_viene_acostado(m)
+    elif ext in ('.glb', '.gltf'):
+        # glTF va SIEMPRE con Y arriba y en metros (lo dice el estandar), y
+        # trimesh no lo gira: la caja de 4 x 2 x 10 de Blender llegaba de 4 x 10 x 2.
+        import numpy as np
+        v = m.vertices.copy()
+        m.vertices = np.column_stack((v[:, 0], -v[:, 2], v[:, 1]))
+        # Metros, dice el estandar, pero hay exportadores que escriben milimetros.
+        # Si el tamaño no es de edificio se prueba otra unidad y se avisa (cambio
+        # local, 12 sep 2026: una casa de 10 m escrita en mm salia de 10 km).
+        from dxf import adivinar_unidad
+        factor, aviso = adivinar_unidad(1.0, float(max(m.extents)), os.path.basename(ruta))
+        if aviso:
+            m.apply_scale(factor)
+            m.metadata.setdefault('despiece_avisos', []).append(aviso)
+        m.metadata['despiece_metros'] = True
+    elif ext in ('.step', '.stp'):
+        # cascadio entrega glTF, que siempre va en metros: la Iglesia de la Luz
+        # en FreeCAD mide 83407 mm y sale de aqui con 83.407.
+        m.metadata['despiece_metros'] = True
     return m
+
+
+def es_step(ruta):
+    """STEP de CAD, no IFC. Los dos son ISO-10303-21 por dentro y `ifc.es_ifc`
+    agarraba el STEP de la Iglesia de la Luz (FILE_SCHEMA AUTOMOTIVE_DESIGN) y
+    ifcopenshell tronaba. Manda lo que diga FILE_SCHEMA."""
+    import os
+    if os.path.splitext(ruta)[1].lower() in ('.step', '.stp'):
+        return True
+    import re
+    try:
+        with open(ruta, 'rb') as f:
+            cabeza = f.read(1 << 16).upper()
+    except OSError:
+        return False
+    # Hasta 64 KB y con regex: con 4 KB, un IFC de cabecera larga (FILE_SCHEMA
+    # cerca del byte 4096) se tomaba por STEP. Cambio local, 12 sep 2026.
+    m = re.search(rb"FILE_SCHEMA\s*\(\s*\(\s*'([^']*)'", cabeza)
+    return bool(b'ISO-10303-21' in cabeza and m and not m.group(1).startswith(b'IFC'))
+
+
+def _parar_si_viene_acostado(m):
+    """El OBJ no dice cual eje va arriba, y Blender, Maya y 3ds Max lo exportan
+    con Y arriba. El Pabellon de Barcelona (OBJ de Blender) llegaba de 59.9 x
+    3.6 x 25.7 m: acostado, y cada muro se habria tomado por losa. Solo se para
+    cuando es claro, si Y mide menos de la mitad que X y que Z; una torre que
+    llegue acostada no se detecta, por eso se avisa lo que se hizo.
+    """
+    import numpy as np
+    e = m.extents
+    if e[1] < 0.5 * min(e[0], e[2]):
+        v = m.vertices.copy()
+        m.vertices = np.column_stack((v[:, 0], -v[:, 2], v[:, 1]))
+        m.metadata.setdefault('despiece_avisos', []).append(
+            'El OBJ venia acostado (con Y arriba, como exporta Blender) y se paro con Z '
+            'arriba. Si tu modelo ya estaba bien, exportalo con "Z arriba" y vuelve a subirlo.')
+    return m
+
+
+def _tolerancia_step(ruta):
+    """Triangular el STEP a 1 mm real.
+
+    Sin tolerancia cascadio tritura: la Farnsworth de FreeCAD salia en 15.6
+    millones de triangulos y 85 s; a 1 mm, 113 mil y 1.8 s, con las mismas
+    medidas. A 1:50 un milimetro real es 0.02 mm de maqueta, menos que el haz.
+
+    cascadio toma tol_linear en milimetros sin importar la unidad del archivo:
+    la misma columna guardada en mm, m y pulgadas da 396 caras con 1.0. Antes se
+    escalaba por la unidad y un STEP en metros recibia 1 micra, 32 veces mas
+    caras (cambio local, 12 sep 2026).
+    """
+    return {'tol_linear': 1.0, 'tol_angular': 0.5}
+
+
+def _ajustar_collada(m, ruta):
+    """Unidad y eje de arriba del .dae, que trimesh lee pero no aplica.
+
+    Medido: el DAE de SketchUp declara <unit meter="0.0254"/> y trimesh lo
+    entrega en pulgadas (la escalera de 4 m salia de 157); y un Y_UP sale igual
+    que un Z_UP. SketchUp duplica cada cara (anverso y reverso): 3.25 millones
+    de triangulos contra 1.63 del mismo modelo en .skp. Se quitan las repetidas.
+    """
+    import re
+    import numpy as np
+    # El <asset> completo, no los primeros 16 KB; comillas dobles o simples; y
+    # X_UP tambien (cambio local, 12 sep 2026).
+    with open(ruta, 'rb') as f:
+        cabeza = f.read(1 << 20)
+    fin = cabeza.find(b'</asset>')
+    if fin > 0:
+        cabeza = cabeza[:fin]
+    u = re.search(rb'<unit[^>]*meter\s*=\s*["\']([0-9.eE+-]+)["\']', cabeza)
+    metros = float(u.group(1)) if u else 1.0
+    arriba = re.search(rb'<up_axis>\s*([XYZ])_UP', cabeza)
+    v = m.vertices.copy()
+    if arriba and arriba.group(1) == b'Y':       # derecha +X, arriba +Y, hacia ti +Z
+        m.vertices = np.column_stack((v[:, 0], -v[:, 2], v[:, 1]))
+    elif arriba and arriba.group(1) == b'X':     # derecha -Y, arriba +X, hacia ti +Z
+        m.vertices = np.column_stack((-v[:, 1], -v[:, 2], v[:, 0]))
+    if metros > 0 and abs(metros - 1.0) > 1e-12:
+        m.apply_scale(metros)
+    m.merge_vertices()
+    m.update_faces(m.unique_faces())
+    m.remove_unreferenced_vertices()
+    m.metadata['despiece_metros'] = True
+    return m
+
+
+# Del que mas informacion trae al que menos: el IFC dice que es cada cosa, el
+# SKP/3DM/DWG traen la geometria completa y ya en unidades, el STL no trae nada.
+# El .3mf va al final: en Thingiverse y Printables es la plataforma de impresion
+# (la Fallingwater trae uno junto a su ReferenceModel.stl, que es el edificio).
+# El .dxf va antes que el .dwg: trae lo mismo y se lee sin AutoCAD ni ODA (un ZIP
+# con los dos tronaba en una maquina sin convertidor). Cambio local, 12 sep 2026.
+PRIORIDAD = ('.ifc', '.skp', '.3dm', '.dxf', '.dwg', '.fbx', '.dae', '.glb', '.gltf',
+             '.step', '.stp', '.obj', '.ply', '.stl', '.off', '.3mf')
+
+
+def es_comprimido(cabeza):
+    return (cabeza[:2] == b'PK' or cabeza[:4] == b'Rar!'
+            or cabeza[:6] == b"7z\xbc\xaf'\x1c")
+
+
+def desempacar(ruta, destino=None):
+    """Abre un .zip/.rar/.7z y regresa (modelo de adentro, aviso o None).
+
+    Asi baja el alumno de 3D Warehouse, Drive o Thingiverse: comprimido, con
+    texturas, y a veces el mismo modelo en tres formatos (la escalera de
+    Arquitek3D llega en tres .rar). Se toma el formato que mas informacion trae
+    y, de ese formato, el archivo mas pesado. Cambio local, 11 sep 2026.
+    """
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    import time
+    import zipfile
+    import zlib
+
+    with open(ruta, 'rb') as f:
+        cabeza = f.read(8)
+    # El .3mf tambien es ZIP por dentro, pero lo lee trimesh entero: abrirlo aqui
+    # daba "el comprimido no trae ningun modelo" (cambio local, 12 sep 2026).
+    if not es_comprimido(cabeza) or os.path.splitext(ruta)[1].lower() == '.3mf':
+        return ruta, None
+    destino = os.path.join(destino or tempfile.mkdtemp(prefix='despiece_zip_'),
+                           'desempacado')
+    os.makedirs(destino, exist_ok=True)
+    otros = set()
+    if cabeza[:2] == b'PK':
+        try:
+            z = zipfile.ZipFile(ruta)
+        except zipfile.BadZipFile:
+            raise SystemExit('el ZIP esta dañado o se bajo a medias: %s' % ruta)
+        # Solo lo que sirve para leer el modelo (texturas, PDFs y renders se
+        # quedan adentro), y con el tope revisado antes de escribir nada.
+        utiles = set(PRIORIDAD) | {'.bin', '.mtl'}
+        elegidas, total = [], 0
+        for info in z.infolist():
+            partes = info.filename.replace('\\', '/').split('/')
+            if info.is_dir() or info.filename.startswith(('/', '\\')) or '..' in partes:
+                continue                             # nada fuera de la carpeta
+            e = os.path.splitext(partes[-1])[1].lower()
+            if e not in utiles or partes[-1].startswith('._') or '__MACOSX' in partes:
+                otros.add(e or partes[-1])
+                continue
+            elegidas.append(info)
+            total += info.file_size
+        if total > TOPE_DESEMPACAR:
+            raise SystemExit('lo de adentro del ZIP pesa %.1f GB descomprimido y el tope es de '
+                             '%.0f GB. Sube solo el modelo: %s'
+                             % (total / 2 ** 30, TOPE_DESEMPACAR / 2 ** 30, ruta))
+        _hay_espacio(destino, total)
+        # Cada falla de zipfile con su explicacion: antes salia como error 500
+        # con el texto de Python (cambio local, 12 sep 2026).
+        for info in elegidas:
+            if info.flag_bits & 0x1:
+                raise SystemExit('el ZIP tiene contraseña. Descomprimelo y sube el modelo de '
+                                 'adentro: %s' % ruta)
+            try:
+                z.extract(info, destino)
+            except NotImplementedError:
+                raise SystemExit('el ZIP usa una compresion que aqui no se abre (Deflate64 o AES '
+                                 'de 7-Zip o WinZip). Vuelve a comprimirlo con el compresor de tu '
+                                 'computadora o sube el modelo solo: %s' % ruta)
+            except (zipfile.BadZipFile, zlib.error, EOFError):
+                raise SystemExit('el ZIP esta dañado o se bajo a medias (%s no se pudo sacar): %s'
+                                 % (info.filename, ruta))
+            except RuntimeError:
+                raise SystemExit('el ZIP tiene contraseña. Descomprimelo y sube el modelo de '
+                                 'adentro: %s' % ruta)
+            except OSError as e:
+                raise SystemExit('no se pudo sacar %s del ZIP (%s). Descomprimelo y sube el '
+                                 'modelo solo: %s' % (info.filename, e.strerror or e, ruta))
+    else:
+        tipo = 'RAR' if cabeza[:4] == b'Rar!' else '7z'
+        tar = shutil.which('bsdtar') or shutil.which('tar')
+        if not tar:
+            raise SystemExit('no se pudo abrir el %s. Descomprimelo y sube el modelo de '
+                             'adentro: %s' % (tipo, ruta))
+        _hay_espacio(destino, 0)
+        # bsdtar no dice cuanto va a escribir antes de hacerlo: se vigila la
+        # carpeta mientras trabaja y se corta si pasa del tope (un .7z de 474 KB
+        # saco 3.2 GB). Cambio local, 12 sep 2026.
+        p = subprocess.Popen([tar, '-xf', ruta, '-C', destino],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        t0, motivo = time.time(), None
+        while p.poll() is None:
+            time.sleep(0.3)
+            if _peso(destino) > TOPE_DESEMPACAR:
+                motivo = ('lo de adentro del %s pasa de %.0f GB descomprimido. Sube solo el '
+                          'modelo: %s' % (tipo, TOPE_DESEMPACAR / 2 ** 30, ruta))
+            elif time.time() - t0 > 600:
+                motivo = 'el %s tardo mas de 10 minutos en abrirse: %s' % (tipo, ruta)
+            if motivo:
+                p.kill()
+                p.wait()
+                shutil.rmtree(destino, ignore_errors=True)
+                raise SystemExit(motivo)
+        if p.returncode != 0:
+            raise SystemExit('no se pudo abrir el %s. Descomprimelo y sube el modelo de '
+                             'adentro: %s' % (tipo, ruta))
+        # Y otra vez al final: si bsdtar acaba antes de la primera medicion, lo que
+        # paso del tope se colaba.
+        if _peso(destino) > TOPE_DESEMPACAR:
+            shutil.rmtree(destino, ignore_errors=True)
+            raise SystemExit('lo de adentro del %s pasa de %.0f GB descomprimido. Sube solo el '
+                             'modelo: %s' % (tipo, TOPE_DESEMPACAR / 2 ** 30, ruta))
+    # Nada de enlaces: un symlink dentro del .7z/.rar hacia otro archivo del disco
+    # hacia que se despiezara ese archivo (cambio local, 12 sep 2026).
+    real = os.path.realpath(destino)
+    candidatos = []
+    for raiz, dirs, archivos in os.walk(destino):
+        for d in list(dirs):
+            if os.path.islink(os.path.join(raiz, d)):
+                os.unlink(os.path.join(raiz, d))
+                dirs.remove(d)
+        if '__MACOSX' in raiz:
+            continue
+        for a in archivos:
+            p_ = os.path.join(raiz, a)
+            if os.path.islink(p_):
+                os.unlink(p_)
+                continue
+            if (not os.path.isfile(p_) or a.startswith('._')
+                    or not os.path.realpath(p_).startswith(real + os.sep)):
+                continue
+            e = os.path.splitext(a)[1].lower()
+            if e in PRIORIDAD:
+                candidatos.append((PRIORIDAD.index(e), -os.path.getsize(p_), p_))
+            else:
+                otros.add(e or a)
+    if not candidatos:
+        raise SystemExit('el comprimido no trae ningun modelo 3D que se pueda leer '
+                         '(trae: %s): %s' % (', '.join(sorted(otros)[:8]) or 'nada', ruta))
+    candidatos.sort()
+    elegido = candidatos[0][2]
+    aviso = None
+    if len(candidatos) > 1:
+        aviso = ('el comprimido traia %d modelos; se uso %s.'
+                 % (len(candidatos), os.path.basename(elegido)))
+    return elegido, aviso
+
+
+TOPE_DESEMPACAR = 2 << 30        # bytes que se sacan de un comprimido, a lo mas
+
+
+def _peso(carpeta):
+    import os
+    total = 0
+    for raiz, _, archivos in os.walk(carpeta):
+        for a in archivos:
+            try:
+                total += os.lstat(os.path.join(raiz, a)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _hay_espacio(carpeta, necesita):
+    """Que abrir un comprimido no llene el disco: queda al menos 1 GB libre."""
+    import shutil
+    libre = shutil.disk_usage(carpeta).free
+    if libre - necesita < (1 << 30):
+        raise SystemExit('no hay espacio en el disco de esta computadora para abrir el '
+                         'comprimido (quedan %.1f GB libres).' % (libre / 2 ** 30))
 
 
 # ------------------------------------------------------------- solidificar

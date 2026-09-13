@@ -223,14 +223,23 @@ def _agrupar_por_plano(mesh, tol_n=TOL_NORMAL, tol_d=TOL_PLANO):
                        float(peso.sum())])
 
     grupos.sort(key=lambda g: -g[3])
+    # El mismo recorrido de antes (el primer fundido que empate se queda con el
+    # grupo), pero la comparacion contra todos los fundidos va en un solo
+    # producto de numpy. Con el doble ciclo, un .skp de 100 mil caras eran 180
+    # millones de np.dot y minuto y medio.
     fundidos = []
+    FN = np.empty((len(grupos), 3)); FD = np.empty(len(grupos))
     for g in grupos:
-        for f in fundidos:
-            if float(np.dot(f[0], g[0])) > 1 - tol_n and abs(f[1] - g[1]) < tol_d:
+        k = len(fundidos)
+        if k:
+            ok = np.nonzero((FN[:k] @ g[0] > 1 - tol_n)
+                            & (np.abs(FD[:k] - g[1]) < tol_d))[0]
+            if len(ok):
+                f = fundidos[ok[0]]
                 f[2].extend(g[2]); f[3] += g[3]
-                break
-        else:
-            fundidos.append(g)
+                continue
+        FN[k] = g[0]; FD[k] = g[1]
+        fundidos.append(g)
     return fundidos
 
 
@@ -295,16 +304,19 @@ def _placas_de_superficies(mesh, min_area, muro_max=MURO_MAX, t_modelo=0.0):
     # maqueta son dos cartones que ocupan el mismo lugar.
     tomados = set()
     placas, sueltas = [], 0
+    # La prueba de normales solo depende de a y b: se hace de un golpe contra
+    # todos los planos y el ciclo de abajo ya solo recorre los paralelos. En un
+    # .skp de 100 mil caras son 10 mil planos y 50 millones de pares.
+    normales = np.array([p['n'] for p in planos], dtype=float).reshape(-1, 3)
     for i, a in enumerate(planos):
         if i in tomados:
             continue
         grupo = [i]
-        for j in range(i + 1, len(planos)):
+        paralelos = np.nonzero(normales[i + 1:] @ a['n'] >= 1 - TOL_NORMAL)[0] + i + 1
+        for j in paralelos.tolist():
             if j in tomados:
                 continue
             b = planos[j]
-            if float(np.dot(a['n'], b['n'])) < 1 - TOL_NORMAL:
-                continue
             # contra el grupo entero, no solo contra la primera: asi entra la
             # tercera cara aunque quede lejos de la de arranque
             if min(abs(b['d'] - planos[k]['d']) for k in grupo) > muro_max:
@@ -766,9 +778,13 @@ def cortar_por_piso(placas, piso, junta_m=0.60):
     if piso < len(niveles):
         z1 = niveles[piso]
     else:
-        z1 = max(float(np.max((p['a_mundo'] @ np.array(
+        # Ultimo piso: no hay losa de arriba, asi que la franja llega hasta lo mas
+        # alto del modelo. Cambio local (12 sep 2026): con z1 = la z mas alta, el
+        # corte de abajo (z1 - junta/2) caia 30 cm debajo de ella y el ultimo
+        # piso perdia su remate: muros cortos y el techo fuera.
+        z1 = max(max(float((p['a_mundo'] @ np.array(
             [c[0], c[1], 0.0, 1.0]))[2]) for c in p['poly'].exterior.coords)
-            for p in placas)
+            for p in placas) + junta_m
 
     salida = []
     for p in placas:

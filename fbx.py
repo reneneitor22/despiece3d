@@ -31,15 +31,18 @@ import hashlib
 import os
 import re
 import struct
+import sys
 
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache_skp')
 
 FIRMA_BIN = b'Kaydara FBX Binary'
 
+# Cambio local (12 sep 2026): el mensaje mandaba a "brew install assimp", que
+# no es lo que falta cuando no hay Homebrew (se usa assimp_py) ni sirve en Windows.
 _AYUDA_INSTALAR = (
-    'para leer .fbx falta assimp:\n'
-    '    brew install assimp\n'
-    '   (o exporta el modelo como OBJ/DAE, que si se leen solos)')
+    'para leer .fbx falta assimp_py. Instalalo en el entorno del programa:\n'
+    '    "%s" -m pip install assimp_py\n'
+    '   (o exporta el modelo como OBJ o DAE, que se leen sin nada extra)' % sys.executable)
 
 
 def es_fbx(ruta):
@@ -107,9 +110,57 @@ def unidad_fbx(ruta):
 
 
 def _firma(ruta):
-    st = os.stat(ruta)
-    crudo = '%s|%d|%d' % (os.path.abspath(ruta), st.st_size, int(st.st_mtime))
-    return hashlib.sha1(crudo.encode('utf-8')).hexdigest()[:12]
+    """Huella del contenido. Era ruta + tamaño + fecha, y en la pagina cada subida
+    vive en su carpeta: el cache nunca se reusaba y crecia sin fin (12 sep 2026)."""
+    h = hashlib.sha1()
+    with open(ruta, 'rb') as f:
+        for trozo in iter(lambda: f.read(1 << 20), b''):
+            h.update(trozo)
+    return h.hexdigest()[:12]
+
+
+def _con_assimp_py(ruta, intermedia):
+    """Lo mismo que `assimp export ruta intermedia.stl`, con assimp_py.
+
+    Medido con una caja de 4 x 2 x 10 m exportada de Blender: sale de 400 x
+    1000 x 200, o sea Y arriba y en la unidad del archivo, igual que la version
+    de linea de comandos. Por eso el resto de cargar_fbx no cambia.
+    """
+    try:
+        import assimp_py as a
+    except ImportError:
+        raise SystemExit(_AYUDA_INSTALAR)
+    import numpy as np
+    import trimesh
+    try:
+        escena = a.import_file(ruta, a.Process_Triangulate | a.Process_PreTransformVertices
+                               | a.Process_JoinIdenticalVertices)
+    except Exception as e:
+        txt = str(e)
+        # Los dos casos que se vieron, dichos en castellano (12 sep 2026): antes el
+        # alumno leia "Mesh processing assumes triangulated faces" o un error vacio.
+        if 'triangulated' in txt:
+            raise SystemExit('el .fbx trae lineas, curvas o puntos sueltos junto con las mallas '
+                             'y el lector se detiene ahi. En tu programa exporta solo las mallas '
+                             '(sin curvas, lineas ni splines) y vuelve a subirlo: %s' % ruta)
+        if re.search(r"loading '[^']*':\s*$", txt) or not txt.strip():
+            raise SystemExit('el .fbx no trae ninguna malla (¿solo huesos, camaras o luces?) o '
+                             'se bajo a medias: %s' % ruta)
+        raise SystemExit('assimp no pudo leer %s: %s' % (ruta, e))
+    V, F, n = [], [], 0
+    for m in escena.meshes:
+        idx = np.asarray(m.indices, dtype=np.int64)
+        if m.num_faces == 0 or idx.size != 3 * m.num_faces:
+            continue                                 # lineas o puntos sueltos
+        v = np.asarray(m.vertices, dtype=np.float64).reshape(-1, 3)
+        V.append(v)
+        F.append(idx.reshape(-1, 3) + n)
+        n += len(v)
+    if not V:
+        raise SystemExit('el .fbx se leyo pero no trae caras (¿solo huesos, camaras o '
+                         'luces?): %s' % ruta)
+    trimesh.Trimesh(vertices=np.vstack(V), faces=np.vstack(F),
+                    process=False).export(intermedia)
 
 
 def cargar_fbx(ruta, usar_cache=True, avisar=True, crudo=False):
@@ -125,8 +176,6 @@ def cargar_fbx(ruta, usar_cache=True, avisar=True, crudo=False):
     import trimesh
 
     exe = shutil.which('assimp')
-    if not exe:
-        raise SystemExit(_AYUDA_INSTALAR)
 
     base = os.path.splitext(os.path.basename(ruta))[0].replace(' ', '_')
     # El paso intermedio va en STL y no en PLY: el PLY que escribe assimp para
@@ -139,17 +188,31 @@ def cargar_fbx(ruta, usar_cache=True, avisar=True, crudo=False):
         if avisar:
             print('leyendo %s (FBX)...' % os.path.basename(ruta))
         os.makedirs(CACHE, exist_ok=True)
-        try:
-            r = subprocess.run([exe, 'export', ruta, intermedia],
-                               capture_output=True, timeout=900)
-        except Exception as e:
-            raise SystemExit('assimp no pudo con el FBX (%s): %s' % (e, ruta))
-        if r.returncode != 0 or not os.path.exists(intermedia):
-            raise SystemExit('assimp no pudo leer %s: %s'
-                             % (ruta, (r.stderr or r.stdout or b''
-                                       ).decode('utf-8', 'replace').strip()[:300]))
+        if not exe:
+            # Cambio local (11 sep 2026): sin Homebrew no hay `assimp` de linea de
+            # comandos y el FBX no entraba; assimp_py (pip) trae el mismo assimp.
+            _con_assimp_py(ruta, intermedia)
+        else:
+            try:
+                r = subprocess.run([exe, 'export', ruta, intermedia],
+                                   capture_output=True, timeout=900)
+            except Exception as e:
+                raise SystemExit('assimp no pudo con el FBX (%s): %s' % (e, ruta))
+            if r.returncode != 0 or not os.path.exists(intermedia):
+                raise SystemExit('assimp no pudo leer %s: %s'
+                                 % (ruta, (r.stderr or r.stdout or b''
+                                           ).decode('utf-8', 'replace').strip()[:300]))
 
-    m = trimesh.load(intermedia, force='mesh')
+    try:
+        m = trimesh.load(intermedia, force='mesh')
+    except Exception:
+        # STL intermedio a medias (el servidor murio escribiendolo): se tira para
+        # que el siguiente intento lo vuelva a sacar (12 sep 2026).
+        try:
+            os.remove(intermedia)
+        except OSError:
+            pass
+        raise SystemExit('el .fbx se leyo a medias; vuelve a intentarlo: %s' % ruta)
     if m is None or m.is_empty or len(m.faces) == 0:
         raise SystemExit('el .fbx se leyo pero no trae caras (¿solo huesos, '
                          'camaras o luces?): %s' % ruta)
@@ -164,9 +227,24 @@ def cargar_fbx(ruta, usar_cache=True, avisar=True, crudo=False):
     m.vertices = np.column_stack((v[:, 0], -v[:, 2], v[:, 1]))
 
     unidad_cm = unidad_fbx(ruta)
-    a_metros = unidad_cm / 100.0
+    # La unidad anotada pasa por la misma revision de sensatez que DXF y 3DM, y
+    # lo que se supuso va a la pantalla (12 sep 2026: una cabecera en cm sobre
+    # datos en metros dejaba la casa de 4 cm sin decir nada).
+    from dxf import adivinar_unidad
+    a_metros, aviso = adivinar_unidad(unidad_cm / 100.0, float(max(m.extents)),
+                                      os.path.basename(ruta))
+    avisos = [aviso] if aviso else []
     if abs(a_metros - 1.0) > 1e-9:
         m.apply_scale(a_metros)
+    # El FBX pasa por float32 (assimp y el STL intermedio): lejos del origen se
+    # pierde precision y un muro de 12 cm con coordenadas UTM salia de 25 cm.
+    lejos = float(np.abs(m.bounds).max())
+    if lejos > 20000 and lejos > 1000 * float(max(m.extents)):
+        avisos.append('el modelo esta a %.0f km del origen (coordenadas de sitio, como UTM). '
+                      'A esa distancia el FBX pierde precision y los espesores delgados salen '
+                      'mal. En tu programa mueve el modelo al origen (0, 0, 0) y vuelve a '
+                      'exportar.' % (lejos / 1000.0))
+    m.metadata['despiece_avisos'] = avisos
 
     if avisar:
         nombres = {1.0: 'centimetros', 100.0: 'metros', 0.1: 'milimetros',

@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """Despiece 3D - servidor local. Sube modelo -> corte listo."""
 import io, json, os, re, shutil, sys, tempfile, time, traceback, uuid, zipfile
+import glob, signal, struct, subprocess, threading, unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import quote, unquote
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
@@ -12,6 +14,7 @@ JOBS = os.path.join(tempfile.gettempdir(), 'despiece3d_jobs')
 # nombre de la etapa lo pone dbg.etapa() en el propio codigo que corre.
 PASOS = {
     None: ('Preparando…', 2),
+    'fila': ('Esperando turno: otro modelo se está cortando', 4),
     'recibir': ('Recibiendo el modelo', 6),
     'parse': ('Leyendo la subida', 10),
     'guardar': ('Guardando el modelo', 14),
@@ -31,10 +34,35 @@ os.makedirs(JOBS, exist_ok=True)
 
 import dbg
 dbg.JOBS_DIR = JOBS
-MAX = 200 * 1024 * 1024
+# Cambio local (12 sep 2026): la subida ya no pasa por la RAM (se escribe a disco
+# mientras llega, ver subida.py), asi que el tope sube de 200 a 500 MB. Lo que
+# tumba la Mac de 8 GB es cuantas caras trae el modelo, no cuantos MB pesa el
+# archivo: por eso el tope de subida va junto con un tope de caras y un solo
+# corte pesado a la vez. Los tres se cambian sin tocar codigo, para una maquina
+# con mas memoria: DESPIECE_MAX_MB, DESPIECE_MAX_CARAS, DESPIECE_TRABAJOS.
+MAX = int(os.environ.get('DESPIECE_MAX_MB', '500')) * 1024 * 1024
 MAX_MB = MAX // (1024 * 1024)   # el tope se escribe UNA vez: pantalla y error salen de aqui
+MAX_CARAS = int(os.environ.get('DESPIECE_MAX_CARAS', '2000000'))
+TRABAJOS = max(1, int(os.environ.get('DESPIECE_TRABAJOS', '1')))
+HORAS_JOBS = float(os.environ.get('DESPIECE_HORAS', '48'))      # luego se borran
+TOPE_CACHE = int(float(os.environ.get('DESPIECE_CACHE_GB', '3')) * (1 << 30))
+from subida import leer_multipart, SubidaMala
 EXT_OK = {'.stl', '.obj', '.ply', '.glb', '.gltf', '.dae', '.off', '.3mf', '.skp',
           '.fbx', '.ifc'}
+# Cambio local (11 sep 2026): AutoCAD, Rhino, STEP y el comprimido tal como se baja.
+EXT_OK |= {'.dxf', '.dwg', '.3dm', '.step', '.stp', '.zip', '.rar', '.7z'}
+# Cerrados que no se pueden leer: en vez de "no soportado", el menu exacto para
+# sacar un archivo que si.
+EXT_EXPORTAR = {
+    '.pln': 'El .pln de ArchiCAD es cerrado. Sacale un IFC (Archivo > Guardar como > IFC) y sube ese.',
+    '.pla': 'El .pla de ArchiCAD es cerrado. Sacale un IFC (Archivo > Guardar como > IFC) y sube ese.',
+    '.blend': 'El .blend de Blender no se lee directo. Exporta FBX u OBJ (Archivo > Exportar) y sube ese.',
+    '.max': 'El .max de 3ds Max es cerrado. Exporta FBX (Archivo > Exportar) y sube ese.',
+    '.c4d': 'El .c4d de Cinema 4D es cerrado. Exporta FBX (Archivo > Exportar) y sube ese.',
+    '.fcstd': 'El .FCStd de FreeCAD no se lee directo. Exporta STEP o IFC (Archivo > Exportar) y sube ese.',
+    '.vwx': 'El .vwx de Vectorworks es cerrado. Exporta IFC o DWG y sube ese.',
+    '.pdf': 'Un PDF es un plano, no un modelo 3D. Sube el archivo del programa donde lo modelaste.',
+}
 # Formatos que se reconocen para NO leerlos: en vez de "formato no soportado"
 # se contesta con la version del archivo y como sacarle el IFC (ver rvt.py).
 EXT_CERRADA = {'.rvt', '.rfa', '.rte', '.rft'}
@@ -118,6 +146,147 @@ def parse_multipart(body, boundary):
     return campos, archivo, meta
 
 
+# ------------------------------------------------ cambios locales, 12 sep 2026
+_FORMATOS = ', '.join(sorted(e.lstrip('.').upper() for e in EXT_OK))
+
+# Un corte a la vez (TRABAJOS): con 8 GB, dos modelos de un millon de caras
+# juntos tumbaban el servidor para todos (137). Los demas esperan en fila.
+_TURNO = threading.BoundedSemaphore(TRABAJOS)
+_ESPERA = []                 # trabajos en fila, en orden de llegada
+_ELOCK = threading.Lock()
+_ULTIMO_BARRIDO = [0.0]
+
+
+def _nombre_seguro(nombre):
+    """El nombre que puso el alumno, en ASCII y sin rutas: "Casa Díaz.DWG" queda
+    "Casa Diaz.dwg". Los avisos de los lectores lo nombran asi en vez de
+    "modelo.dwg", y AutoCAD recibe una ruta sin acentos."""
+    base = os.path.basename((nombre or '').replace('\\', '/'))
+    base = unicodedata.normalize('NFKD', base).encode('ascii', 'ignore').decode('ascii')
+    base = re.sub(r'[^A-Za-z0-9 ._()+-]+', '_', base).strip(' .')
+    raiz, ext = os.path.splitext(base)
+    return (raiz[:80] or 'modelo') + ext.lower()
+
+
+def _disposicion(nombre):
+    """Content-Disposition con acentos: ASCII para los navegadores viejos y
+    filename* en UTF-8 (send_header escribe latin-1 y un "Łódź" tronaba)."""
+    simple = unicodedata.normalize('NFKD', nombre).encode('ascii', 'ignore').decode('ascii')
+    simple = simple.replace('"', '').replace('\\', '') or 'archivo'
+    return "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (simple, quote(nombre))
+
+
+def _sin_rutas(msg, carpeta):
+    """Los mensajes de los lectores terminan en la ruta del archivo en el servidor
+    (/var/folders/.../despiece3d_jobs/<job>/entrada/Casa.dwg): al alumno solo le
+    sirve el nombre."""
+    for base in {carpeta, os.path.realpath(carpeta)}:
+        msg = re.sub(re.escape(base) + r'[/\\](?:entrada[/\\]|desempacado[/\\])?', '', msg)
+    return msg
+
+
+def _msg_caras(n):
+    return ('el modelo tiene %s caras y el tope en esta computadora es de %s: con mas, la '
+            'memoria no alcanza y el servidor se cae para todos. Simplificalo (menos detalle '
+            'en curvas, sin muebles ni vegetacion) o exporta solo la parte que vas a cortar.'
+            % ('{:,}'.format(n), '{:,}'.format(MAX_CARAS)))
+
+
+def _caras_stl_binario(ruta):
+    """Caras de un STL binario leidas de su cabecera, sin cargarlo, o None."""
+    try:
+        tam = os.path.getsize(ruta)
+        with open(ruta, 'rb') as f:
+            cab = f.read(84)
+        if len(cab) < 84:
+            return None
+        n = struct.unpack('<I', cab[80:84])[0]
+        return n if 84 + 50 * n == tam else None
+    except OSError:
+        return None
+
+
+def _limpiar_trabajo(carpeta, ok):
+    """Lo desempacado se borra siempre; el modelo subido, solo si salio bien (si
+    fallo, se queda para poder reproducir la falla, y el barrido lo borra luego)."""
+    shutil.rmtree(os.path.join(carpeta, 'desempacado'), ignore_errors=True)
+    if ok:
+        shutil.rmtree(os.path.join(carpeta, 'entrada'), ignore_errors=True)
+
+
+def _barrer_viejos():
+    """Borra trabajos de mas de HORAS_JOBS, temporales de lectores que quedaron de
+    un servidor que murio, y poda los caches por antiguedad hasta TOPE_CACHE.
+    Antes nada de esto se borraba: 25 alumnos llenaban el disco en dias."""
+    ahora = time.time()
+    try:
+        for d in os.listdir(JOBS):
+            p = os.path.join(JOBS, d)
+            if os.path.isdir(p) and ahora - os.path.getmtime(p) > HORAS_JOBS * 3600:
+                shutil.rmtree(p, ignore_errors=True)
+                dbg.olvidar(d)
+    except OSError:
+        pass
+    for patron in ('despiece_zip_*', 'despiece_dwg_*', 'despiece_acad_*', 'despiece_stl_*',
+                   'despiece_oda_*'):
+        for p in glob.glob(os.path.join(tempfile.gettempdir(), patron)):
+            try:
+                if ahora - os.path.getmtime(p) > 3600:
+                    shutil.rmtree(p, ignore_errors=True)
+            except OSError:
+                pass
+    for cache in (os.path.join(BASE, '.cache_skp'), os.path.join(BASE, '.cache_ifc')):
+        try:
+            nombres = os.listdir(cache)
+        except OSError:
+            continue
+        archivos = []
+        for f in nombres:
+            p = os.path.join(cache, f)
+            try:
+                if os.path.isfile(p):
+                    archivos.append((os.path.getmtime(p), os.path.getsize(p), p))
+            except OSError:
+                pass
+        total = sum(a[1] for a in archivos)
+        for _, tam, p in sorted(archivos):
+            if total <= TOPE_CACHE:
+                break
+            try:
+                os.remove(p)
+                total -= tam
+            except OSError:
+                pass
+
+
+def _barrer_de_vez_en_cuando():
+    if time.time() - _ULTIMO_BARRIDO[0] > 3600:
+        _ULTIMO_BARRIDO[0] = time.time()
+        threading.Thread(target=_barrer_viejos, daemon=True).start()
+
+
+def _barrer_acad_huerfanos():
+    """AcCoreConsole que quedaron vivos de un servidor anterior que murio: giran
+    al 100 % sin fin (uno llevaba 13 h). Solo los que corren un .scr de este
+    programa (carpeta despiece_acad_) y ya no tienen padre."""
+    if os.name == 'nt':
+        return
+    try:
+        salida = subprocess.run(['ps', '-Ao', 'pid=,ppid=,command='], capture_output=True,
+                                text=True, timeout=10).stdout
+    except Exception:
+        return
+    for linea in salida.splitlines():
+        partes = linea.split(None, 2)
+        if (len(partes) == 3 and partes[1] == '1' and 'AcCoreConsole' in partes[2]
+                and 'despiece_acad_' in partes[2]):
+            try:
+                os.kill(int(partes[0]), signal.SIGKILL)
+                print('   se cerro un AutoCAD huerfano (pid %s)' % partes[0])
+            except (OSError, ValueError):
+                pass
+
+
 class H(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
@@ -166,6 +335,12 @@ class H(BaseHTTPRequestHandler):
             e = dbg.progreso(m.group(1)) if m else None
             paso, seg = (e[0], time.time() - e[1]) if e else (None, 0.0)
             etiqueta, pct = PASOS.get(paso, ('Trabajando…', 50))
+            if paso == 'fila':
+                with _ELOCK:
+                    antes = (_ESPERA.index(m.group(1)) + 1
+                             if m and m.group(1) in _ESPERA else 1)
+                etiqueta = ('En fila: %d modelo%s antes que el tuyo'
+                            % (antes, '' if antes == 1 else 's'))
             return self._send(200, 'application/json; charset=utf-8',
                               json.dumps({'etapa': paso, 'texto': etiqueta,
                                           'pct': pct, 'seg': round(seg, 1)},
@@ -175,7 +350,9 @@ class H(BaseHTTPRequestHandler):
                      for e in ejemplos_disponibles()]
             return self._send(200, 'application/json; charset=utf-8',
                               json.dumps(lista, ensure_ascii=False))
-        m = re.match(r'^/r/([a-f0-9]{12})/(.+)$', ruta)
+        # El nombre viaja codificado (espacios, acentos, #): sin decodificarlo, "Casa
+        # Díaz FINAL.pdf" daba 404 (cambio local, 12 sep 2026).
+        m = re.match(r'^/r/([a-f0-9]{12})/(.+)$', unquote(ruta))
         if m:
             job, nombre = m.group(1), os.path.basename(m.group(2))
             f = os.path.join(JOBS, job, nombre)
@@ -185,7 +362,7 @@ class H(BaseHTTPRequestHandler):
                         'application/zip' if nombre.endswith('.zip') else
                         'text/plain; charset=utf-8' if nombre.endswith('.log') else
                         'application/octet-stream')
-                extra = ({'Content-Disposition': 'attachment; filename="%s"' % nombre}
+                extra = ({'Content-Disposition': _disposicion(nombre)}
                          if nombre.endswith(('.zip', '.dxf', '.dwg', '.pdf')) else None)
                 return self._send(200, tipo, open(f, 'rb').read(), extra)
         self._send(404, 'text/plain; charset=utf-8', 'no existe')
@@ -209,7 +386,8 @@ class H(BaseHTTPRequestHandler):
             dbg.set_job(job)
             dbg.marcar('recibir', job)
             ext = os.path.splitext(elegido['ruta'])[1].lower()
-            destino = os.path.join(carpeta, 'modelo' + ext)
+            os.makedirs(os.path.join(carpeta, 'entrada'), exist_ok=True)
+            destino = os.path.join(carpeta, 'entrada', 'modelo' + ext)
             with dbg.etapa('ejemplo.copiar', origen=elegido['ruta'], destino=destino):
                 shutil.copyfile(elegido['ruta'], destino)
             dbg.log('ejemplo.verif', bytes=os.path.getsize(destino))
@@ -263,51 +441,65 @@ class H(BaseHTTPRequestHandler):
             # que es justo lo que hay que poder ver cuando una subida falla.
             job = self._job_pedido()
             carpeta = os.path.join(JOBS, job)
-            os.makedirs(carpeta, exist_ok=True)
+            entrada = os.path.join(carpeta, 'entrada')
+            os.makedirs(entrada, exist_ok=True)
             dbg.set_job(job)
             dbg.marcar('recibir', job)
+            _barrer_de_vez_en_cuando()
 
-            leido, trozos, hito = 0, [], 4 << 20
-            while leido < n:
-                c = self.rfile.read(min(1 << 20, n - leido))
-                if not c:
-                    break
-                trozos.append(c); leido += len(c)
-                if leido >= hito:
+            # Cambio local (12 sep 2026): el archivo se escribe a disco MIENTRAS
+            # llega (subida.py). Antes el cuerpo entero se juntaba en RAM y se
+            # copiaba cuatro veces: 150 MB costaban 750 MB de pico y seguian 300 MB
+            # ocupados durante todo el corte. El modelo va en entrada/ con el
+            # nombre del alumno: fuera de las descargas y con su nombre en los avisos.
+            hito = [4 << 20]
+
+            def avance(leido):
+                if leido >= hito[0]:
                     dbg.log('recibir.progreso', leido=leido, total=n)
-                    hito += 4 << 20
+                    hito[0] += 4 << 20
+
+            def destino(nombre_orig):
+                ext = os.path.splitext(nombre_orig)[1].lower()
+                if ext in EXT_OK or ext in EXT_CERRADA:
+                    return os.path.join(entrada, _nombre_seguro(nombre_orig))
+                return os.devnull          # se lee y se tira: solo se contesta que no
+
+            try:
+                with dbg.etapa('parse'):
+                    campos, archivo, mp, leido = leer_multipart(
+                        self.rfile.read, n, boundary, destino, al_avance=avance)
+            except SubidaMala as e:
+                dbg.log('recibir.cortada', nivel='error', motivo=str(e))
+                return self._send(400, 'application/json', json.dumps(
+                    {'error': 'la subida llego incompleta (%s). Vuelve a intentarlo.' % e,
+                     'job': job}))
             dbg.log('recibir.fin', leido=leido, total=n, completo=(leido >= n))
-            with dbg.etapa('parse'):
-                campos, archivo, mp = parse_multipart(b''.join(trozos), boundary)
             dbg.log('parse.detalle', n_partes=mp['n_partes'], campos=sorted(campos),
                     vacias=mp['vacias'],
                     archivo=(archivo[0] if archivo else None),
-                    bytes_archivo=(len(archivo[1]) if archivo else 0))
+                    bytes_archivo=(archivo[2] if archivo else 0))
             if not archivo:
                 dbg.log('parse.rechazo', nivel='error', motivo='sin_archivo')
                 return self._send(400, 'application/json', json.dumps({'error': 'no llego el archivo'}))
 
-            nombre_orig, datos = archivo
+            nombre_orig, ruta_modelo, bytes_archivo = archivo
             ext = os.path.splitext(nombre_orig)[1].lower()
             dbg.log('validar', ext=ext, ok=(ext in EXT_OK))
             if ext in EXT_CERRADA:
-                # Hay que guardarlo para poder leerle la version adentro.
+                # Se guardo para poder leerle la version adentro.
                 import rvt as _rvt
-                tmp = os.path.join(carpeta, 'cerrado' + ext)
-                open(tmp, 'wb').write(datos)
-                err = {'error': _rvt.rechazo(tmp)}
+                err = {'error': _rvt.rechazo(ruta_modelo)}
                 dbg.log('validar.cerrado', nivel='error', ext=ext,
-                        version=_rvt.version_rvt(tmp)[0])
+                        version=_rvt.version_rvt(ruta_modelo)[0])
                 return self._send(400, 'application/json', json.dumps({**err, 'job': job}))
+            if ext in EXT_EXPORTAR:
+                return self._send(400, 'application/json',
+                                  json.dumps({'error': EXT_EXPORTAR[ext], 'job': job}))
             if ext not in EXT_OK:
-                err = {'error': 'formato %s no soportado. Lee IFC, STL, OBJ, DAE, PLY, '
-                                'GLB, SKP y FBX.' % (ext or '?')}
+                err = {'error': 'formato %s no soportado. Lee %s.' % (ext or '?', _FORMATOS)}
                 return self._send(400, 'application/json', json.dumps({**err, 'job': job}))
-
-            ruta_modelo = os.path.join(carpeta, 'modelo' + ext)
-            with dbg.etapa('guardar', ruta=ruta_modelo):
-                open(ruta_modelo, 'wb').write(datos)
-            dbg.log('guardar.verif', bytes_pedidos=len(datos),
+            dbg.log('guardar.verif', bytes_pedidos=bytes_archivo,
                     bytes_en_disco=os.path.getsize(ruta_modelo))
             resultado = procesar(ruta_modelo, campos, carpeta, job,
                                  os.path.splitext(os.path.basename(nombre_orig))[0])
@@ -408,6 +600,40 @@ def _cajetin(nombre, cfg, campos):
 
 
 def procesar(ruta_modelo, campos, carpeta, job, nombre):
+    """Espera su turno, corta, y limpia lo que ya no se ocupa.
+
+    Cambio local (12 sep 2026): un solo corte a la vez (TRABAJOS) y los demas en
+    fila, con su lugar en /progreso; los avisos del lector llegan tambien cuando
+    el corte falla; y los mensajes ya no enseñan rutas del servidor.
+    """
+    with _ELOCK:
+        _ESPERA.append(job)
+    dbg.marcar('fila', job)
+    try:
+        _TURNO.acquire()
+    finally:
+        with _ELOCK:
+            if job in _ESPERA:
+                _ESPERA.remove(job)
+    avisos = []
+    r = None
+    try:
+        r = _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos)
+    except SystemExit as e:
+        r = {'error': str(e)}
+    finally:
+        _TURNO.release()
+        _limpiar_trabajo(carpeta, isinstance(r, dict) and r.get('ok'))
+    if isinstance(r, dict) and r.get('error'):
+        r['error'] = _sin_rutas(str(r['error']), carpeta)
+        if avisos:
+            r['avisos'] = [_sin_rutas(a, carpeta) for a in avisos]
+    elif isinstance(r, dict) and r.get('avisos'):
+        r['avisos'] = [_sin_rutas(str(a), carpeta) for a in r['avisos']]
+    return r
+
+
+def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
     _t0 = time.perf_counter()
     dbg.log('procesar.inicio', ruta=ruta_modelo, nombre=nombre,
             modo=campos.get('modo', 'curvas'), campos=sorted(campos))
@@ -436,9 +662,17 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
         dbg.log('procesar.error', nivel='error', motivo='hoja_fuera_rango', hw=hw, hh=hh)
         return {'error': 'la hoja debe medir entre 50 y 5000 mm por lado'}
 
-    from despiece import cargar_modelo
+    from despiece import cargar_modelo, desempacar
     import skp as _skp
     try:
+        # Cambio local (11 sep 2026): el .zip/.rar se abre aqui y no dentro de
+        # cargar_modelo, para que lo de abajo (IFC, unidades) vea el de adentro.
+        ruta_modelo, aviso_zip = desempacar(ruta_modelo, carpeta)
+        # Un STL binario dice cuantas caras trae en su cabecera: si pasa del tope
+        # se contesta antes de cargarlo, que es lo que se comeria la memoria.
+        n_stl = _caras_stl_binario(ruta_modelo) if ruta_modelo.lower().endswith('.stl') else None
+        if n_stl and n_stl > MAX_CARAS:
+            raise SystemExit(_msg_caras(n_stl))
         with dbg.etapa('cargar_modelo', ruta=ruta_modelo):
             m = cargar_modelo(ruta_modelo)
     except SystemExit as e:
@@ -446,15 +680,25 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
         # pantalla en vez de matar el hilo del trabajo.
         dbg.log('cargar_modelo.rechazo', nivel='error', motivo=str(e))
         return {'error': str(e)}
+    # Lo que el lector tuvo que suponer (unidades, caras sin malla, cual modelo
+    # del ZIP) va a la pantalla, no se queda en la consola.
+    avisos_lector = ([aviso_zip] if aviso_zip else []) + list(
+        m.metadata.get('despiece_avisos') or [])
+    dbg.log('modelo.avisos', avisos=avisos_lector)
+    avisos_out.extend(avisos_lector)
     dbg.log('modelo.cargado', vertices=len(m.vertices), caras=len(m.faces),
             extents=[round(x, 4) for x in m.extents],
             watertight=bool(m.is_watertight), vacio=bool(m.is_empty))
     if m.is_empty or len(m.faces) == 0:
         dbg.log('procesar.error', nivel='error', motivo='sin_geometria')
         return {'error': 'el archivo no trae geometria legible'}
+    if len(m.faces) > MAX_CARAS:
+        dbg.log('procesar.error', nivel='error', motivo='demasiadas_caras', caras=len(m.faces))
+        return {'error': _msg_caras(len(m.faces))}
     import fbx as _fbx
     import ifc as _ifc
-    if _skp.es_skp(ruta_modelo) or _fbx.es_fbx(ruta_modelo) or _ifc.es_ifc(ruta_modelo):
+    if (_skp.es_skp(ruta_modelo) or _fbx.es_fbx(ruta_modelo) or _ifc.es_ifc(ruta_modelo)
+            or m.metadata.get('despiece_metros')):   # DWG, DXF, 3DM, DAE, STEP (local)
         # SketchUp guarda en pulgadas, el FBX trae su unidad anotada y el IFC la
         # declara en IfcUnitAssignment; los tres lectores ya entregan metros,
         # asi que lo que haya escogido el usuario en el selector no aplica.
@@ -477,6 +721,7 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
         r = _estructural(m, cfg, carpeta, job, nombre, campos)
         if isinstance(r, dict) and r.get('ok'):
             r['segundos'] = round(time.perf_counter() - _t0, 1)
+            r['avisos'] = avisos_lector + list(r.get('avisos') or [])
         return r
 
     solidificado = False
@@ -564,12 +809,13 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
             'dwg': dwg, 'capas': {k: v['capa'] for k, v in ops.items()},
             'archivos': _descargables(carpeta, job),
             'guia': '/r/%s/guia.html' % job,
-            'zip': '/r/%s/%s' % (job, os.path.basename(zip_path)),
+            'zip': '/r/%s/%s' % (job, quote(os.path.basename(zip_path))),
             'svgs': svgs,
             'escala': int(escala), 'espesor': espesor,
             'solidificado': solidificado,
             'vaciado': vaciar,
             'grandes': grandes,
+            'avisos': avisos_lector,
             'medidas_maqueta': [round(m.extents[0] * cfg.a_mm), round(m.extents[1] * cfg.a_mm),
                                 round(stats['alto_mm'])],
             'stats': {k: round(v, 1) for k, v in stats.items()}}
@@ -599,7 +845,7 @@ def _extras(hojas, cfg, carpeta, nombre, dxfs, titulo):
 
 def _descargables(carpeta, job):
     """Los archivos que el alumno manda al taller, uno por uno."""
-    return [{'nombre': f, 'url': '/r/%s/%s' % (job, f)}
+    return [{'nombre': f, 'url': '/r/%s/%s' % (job, quote(f))}
             for f in sorted(os.listdir(carpeta))
             if f.endswith(('.dxf', '.dwg', '.pdf'))]
 
@@ -716,7 +962,7 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
             'dwg': dwg, 'capas': {k: v['capa'] for k, v in ops.items()},
             'archivos': _descargables(carpeta, job),
             'guia': '/r/%s/guia.html' % job,
-            'zip': '/r/%s/%s' % (job, os.path.basename(zip_path)),
+            'zip': '/r/%s/%s' % (job, quote(os.path.basename(zip_path))),
             'svgs': svgs, 'iso': iso_a, 'iso_explotada': iso_e,
             'escala': int(cfg.escala), 'espesor': cfg.espesor_mm,
             'grandes': grandes,
@@ -877,7 +1123,7 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
 </style>
 <div class="wrap">
 <header>
- <div class="marca"><i></i><span>Despiece 3D</span><span class="by">by Irving y René</span></div>
+ <div class="marca"><i></i><span>Despiece 3D</span></div>
  <h1>Del modelo 3D al archivo de corte.</h1>
  <p class="lead">Sube tu maqueta y baja el archivo listo para el taller: piezas numeradas,
  acomodadas en la hoja, con sus capas de corte, grabado y marcado y la tabla de corte adentro.
@@ -895,11 +1141,11 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
   El modelo debe traer los muros con <b>espesor</b>, no como caras sueltas.</p>
  <div class="drop" id="drop">
   <b id="dropTxt">Arrastra tu modelo aquí</b>
-  <small><b>IFC</b> · STL · OBJ · DAE · PLY · GLB · SKP · FBX — hasta {{MAX_MB}} MB</small>
+  <small><b>IFC</b> · SKP · 3DM · DWG · DXF · FBX · DAE · OBJ · STL · GLB · STEP · 3MF · PLY · ZIP · RAR · 7Z — hasta {{MAX_MB}} MB</small>
   <small class="nota-ifc">Si tu proyecto está en Revit o ArchiCAD, exporta <b>IFC</b>: trae
    escrito cuál elemento es muro y a qué planta va, y el despiece sale mejor que con
    cualquier otro formato.</small>
-  <input type="file" id="file" accept=".ifc,.stl,.obj,.dae,.ply,.glb,.gltf,.off,.3mf,.skp,.fbx,.rvt" hidden>
+  <input type="file" id="file" accept="{{ACCEPT}}" hidden>
  </div>
 
  <div class="grid">
@@ -1281,7 +1527,7 @@ async function correrEjemplo(boton){
     dbgResultado({job:d.job,raw:JSON.stringify(d,null,2),
       kv:{ejemplo:boton.dataset.id,'status HTTP':r.status,'tiempo total':r.ms+' ms',
           'export (servidor)':(d.segundos!=null?d.segundos+' s':'—')}});
-    if(d.error){fallo(d.error);}else{pintar(d);}
+    if(d.error){fallo(d.error,d.avisos);}else{pintar(d);}
   }catch(e){fallo('No se pudo procesar: '+e.message);}
   finally{
     pararProgreso();
@@ -1336,14 +1582,19 @@ $('go').onclick=async()=>{
           'tamaño':(archivo.size/1048576).toFixed(2)+' MB',
           'status HTTP':r.status,'tiempo total':r.ms+' ms',
           'export (servidor)':(d.segundos!=null?d.segundos+' s':'—')}});
-    if(d.error){fallo(d.error);return;}
+    if(d.error){fallo(d.error,d.avisos);return;}
     pintar(d);
   }catch(e){fallo('No se pudo procesar: '+e.message);}
   finally{pararProgreso();$('go').disabled=false;
           $('go').textContent='Generar archivo de corte';}
 };
 
-function fallo(msg){$('err').textContent=msg;$('err').hidden=false;}
+// Con el error van los avisos del lector (que unidad supuso, cual modelo del
+// ZIP uso): justo cuando algo falla es cuando mas sirven (cambio local, 12 sep).
+function fallo(msg,avisos){
+  $('err').innerHTML=esc(msg)+(avisos||[]).map(a=>
+    '<div class="aviso" style="margin-top:8px">'+esc(a)+'</div>').join('');
+  $('err').hidden=false;}
 function kpi(v,t){return '<div class="kpi"><b>'+v+'</b><span>'+t+'</span></div>';}
 // Cuanto tardo el servidor en generar el archivo (sin contar la subida).
 function dur(s){if(s==null)return '—';return s<60?s+' s'
@@ -1375,6 +1626,7 @@ function pintar(d){
   if(d.modo==='estructura')return pintarEstructura(d);
   const m=d.medidas_maqueta;
   let avisos='';
+  (d.avisos||[]).forEach(a=>avisos+='<div class="aviso">'+esc(a)+'</div>');
   if(d.solidificado)avisos+='<div class="aviso">Tu modelo era una superficie abierta '+
     '(típico de un terreno). Le generamos faldón y base para poder rebanarlo.</div>';
   if(d.grandes&&d.grandes.length)avisos+='<div class="aviso"><b>'+d.grandes.length+
@@ -1441,6 +1693,10 @@ function pintarEstructura(d){
 </script>
 </html>"""
 PAGINA = PAGINA.replace('{{MAX_MB}}', str(MAX_MB))
+# El selector de archivos acepta lo que el servidor contesta, tomado de las mismas
+# listas (cambio local, 12 sep 2026: el .vwx o el .pla salian en gris y el alumno
+# nunca veia como exportarlos).
+PAGINA = PAGINA.replace('{{ACCEPT}}', ','.join(sorted(EXT_OK | set(EXT_EXPORTAR) | EXT_CERRADA)))
 
 
 def ip_lan():
@@ -1469,4 +1725,12 @@ if __name__ == '__main__':
     else:
         print('Despiece 3D en http://localhost:%d  (solo esta Mac; usa --red para compartir)'
               % puerto)
-    ThreadingHTTPServer((host, puerto), H).serve_forever()
+    # Al arrancar: AutoCAD huerfanos de un servidor que murio, y lo viejo del disco.
+    _barrer_acad_huerfanos()
+    _ULTIMO_BARRIDO[0] = time.time()
+    threading.Thread(target=_barrer_viejos, daemon=True).start()
+    print('   un corte a la vez (DESPIECE_TRABAJOS=%d); subida hasta %d MB; tope de %s caras'
+          % (TRABAJOS, MAX_MB, '{:,}'.format(MAX_CARAS)))
+    servidor = ThreadingHTTPServer((host, puerto), H)
+    servidor.daemon_threads = True
+    servidor.serve_forever()

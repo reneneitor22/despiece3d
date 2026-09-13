@@ -29,12 +29,15 @@ firma cambia y se relee solo.
 """
 import hashlib
 import os
+import sys
 
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache_skp')
 
+# Cambio local (12 sep 2026): "pip3 install --user" instalaba fuera del .venv
+# donde corre el programa, y el error seguia igual.
 _AYUDA_INSTALAR = (
-    'para leer .skp falta la libreria openskp:\n'
-    '    pip3 install --user openskp')
+    'para leer .skp falta la libreria openskp. Instalala en el entorno del programa:\n'
+    '    "%s" -m pip install openskp' % sys.executable)
 
 
 def es_skp(ruta):
@@ -51,9 +54,14 @@ def es_skp(ruta):
 
 
 def _firma(ruta):
-    st = os.stat(ruta)
-    crudo = '%s|%d|%d' % (os.path.abspath(ruta), st.st_size, int(st.st_mtime))
-    return hashlib.sha1(crudo.encode('utf-8')).hexdigest()[:12]
+    """Huella del contenido. Era ruta + tamaño + fecha, y en la pagina cada subida
+    vive en su carpeta: el cache nunca se reusaba y crecia sin fin. Cambio local,
+    12 sep 2026."""
+    h = hashlib.sha1()
+    with open(ruta, 'rb') as f:
+        for trozo in iter(lambda: f.read(1 << 20), b''):
+            h.update(trozo)
+    return h.hexdigest()[:12]
 
 
 def info_skp(ruta):

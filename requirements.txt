@@ -1,23 +1,33 @@
-# Versiones exactas, las mismas que corren en la Mac de Rene.
-# Probadas en Python 3.11 arm64 (Apple Silicon). Si algo se actualiza y truena,
-# este archivo dice a que volver.
-numpy==2.0.2
-scipy==1.13.1
-shapely==2.0.7
+# Versiones exactas. Cambio local (12 sep 2026): son las del .venv de la Mac del
+# piloto (Python 3.13), con las que pasan las 77 pruebas. Las del zip (numpy
+# 2.0.2, scipy 1.13.1) no traen rueda para Python 3.13, y shapely 2.0.7 no tiene
+# constrained_delaunay_triangles, que usa rhino.py. Las originales estan en
+# CAMBIOS-LOCALES.txt, punto 13.
+# Si algo se actualiza y truena, este archivo dice a que volver.
+numpy==2.5.3
+scipy==1.18.1
+shapely==2.1.2
 trimesh==4.12.2
-networkx==3.2.1
+networkx==3.6.1
 rectpack==0.2.2
 ezdxf==1.4.2
 reportlab==4.5.1
-pillow==11.3.0
+pillow==12.3.0
 openskp==1.1.0
 ifcopenshell==0.8.5
 
 # Las dos que trimesh NO pide sola y sin las cuales el despiece truena:
 #   mapbox_earcut -> "No available triangulation engine!" al extruir poligonos
 #   rtree         -> "No module named 'rtree'" al armar el arbol de contornos
-mapbox_earcut==2.0.0
+mapbox_earcut==2.1.0
 rtree==1.4.1
 
 # ifcopenshell trae su propio motor de geometria compilado (~42 MB de rueda) y
 # se baja de PyPI como cualquier otra: para el .ifc NO hace falta brew.
+
+#   lxml -> trimesh la pide para el .3mf
+lxml==6.1.3
+
+# Los lectores de DAE, 3DM, STEP y FBX van aparte, en requirements-formatos.txt:
+# instalar.sh los pone uno por uno y, si uno no entra (rhino3dm no trae rueda
+# para macOS 13), solo ese formato se queda sin leer.

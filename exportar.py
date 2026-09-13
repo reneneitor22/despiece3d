@@ -677,7 +677,11 @@ def _oda_convertidor():
     if exe:
         return exe
     for patron in ('/Applications/ODAFileConverter*.app/Contents/MacOS/ODAFileConverter',
-                   '/Applications/ODA/ODAFileConverter*/ODAFileConverter'):
+                   '/Applications/ODA/ODAFileConverter*/ODAFileConverter',
+                   # Windows (cambio local, 12 sep 2026): el instalador del ODA no
+                   # lo pone en el PATH. Sin probar: no hay Windows a la mano.
+                   'C:/Program Files/ODA/ODAFileConverter*/ODAFileConverter.exe',
+                   'C:/Program Files (x86)/ODA/ODAFileConverter*/ODAFileConverter.exe'):
         hallados = sorted(glob.glob(patron))
         if hallados:
             return hallados[-1]
