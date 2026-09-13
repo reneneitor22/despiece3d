@@ -341,14 +341,20 @@ Debajo del propio kerf del láser (0.15 mm), o sea: arma.
 | `ifc.py` | leer IFC **con semántica**: tipo, planta y qué no va en la maqueta |
 | `rvt.py` | reconocer un archivo de Revit, sacarle la versión y decir cómo exportar IFC |
 | `skp.py` / `fbx.py` | leer SketchUp y FBX: ejes, unidades y caché |
+| `dxf.py` | leer DXF y DWG de entrada: mallas, bloques y sólidos de AutoCAD |
+| `rhino.py` | leer .3dm de Rhino (malla de render + caras planas sin malla) |
+| `subida.py` | recibir la subida a disco mientras llega, sin juntarla en RAM |
 | `verificar_casa.py` / `verificar.py` | auditorías |
 
 ## Dependencias
 
 ```bash
-pip3 install --user trimesh shapely ezdxf networkx scipy rtree pillow numpy rectpack \
-                    reportlab openskp ifcopenshell
-brew install assimp libredwg          # solo para FBX y para el DWG
+./instalar.sh     # python@3.13 + assimp + libredwg por brew, y todo lo demas en .venv
+# a mano, lo mismo:
+brew install python@3.13 assimp libredwg
+python3.13 -m venv .venv
+./.venv/bin/python -m pip install -r requirements.txt
+./.venv/bin/python -m pip install -r requirements-formatos.txt   # DAE, 3DM, STEP, FBX sin brew
 ```
 
 `reportlab` es para el PDF, `openskp` para leer SketchUp, `ifcopenshell` para

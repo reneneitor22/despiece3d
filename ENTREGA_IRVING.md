@@ -53,7 +53,7 @@ git pull
 ## Lo que instala (para que sepas qué está entrando)
 
 - **Homebrew** — el instalador de programas de línea de comandos de Mac.
-- **python@3.11** — el motor; queda aparte, no toca el Python del sistema.
+- **python@3.13** — el motor; queda aparte, no toca el Python del sistema.
 - **assimp** — para leer FBX.
 - **libredwg** — para escribir el DWG.
 - **ifcopenshell** — para leer IFC. Se baja con las demás librerías de Python,
