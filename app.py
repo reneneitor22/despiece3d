@@ -646,10 +646,7 @@ def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
 
     unidades = campos.get('unidades', 'm')
     espesor = float(campos.get('espesor', 3) or 3)
-    # Sin compensacion de kerf. Irving: el taller ya la mete en su maquina, y
-    # dos compensaciones encimadas dejan la pieza floja. Se manda la medida
-    # real y el que corta decide.
-    kerf = float(campos.get('kerf', 0) or 0)
+    kerf = float(campos.get('kerf', 0.15) or 0)
     hoja_txt = (campos.get('hoja') or '500x700').lower()
     if hoja_txt == 'otra':
         hoja_txt = '%sx%s' % (campos.get('hoja_w') or 500, campos.get('hoja_h') or 700)
@@ -1210,6 +1207,10 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
     <input type="number" id="hoja_h" value="900" min="50" max="5000" step="10">
    </div>
   </div>
+  <div>
+   <label>Kerf del láser (mm)</label>
+   <input type="number" id="kerf" value="0.15" min="0" max="1" step="0.05">
+  </div>
   <div id="cVaciado" hidden>
    <label>Interior de las láminas</label>
    <div class="seg">
@@ -1555,6 +1556,7 @@ $('go').onclick=async()=>{
   fd.append('hoja',$('hoja').value);
   fd.append('hoja_w',$('hoja_w').value);
   fd.append('hoja_h',$('hoja_h').value);
+  fd.append('kerf',$('kerf').value);
   fd.append('vaciar',document.querySelector('input[name=vc]:checked').value);
   fd.append('modo',modo());
   fd.append('uniones',document.querySelector('input[name=un]:checked').value);
