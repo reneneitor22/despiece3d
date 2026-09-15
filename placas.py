@@ -4,6 +4,7 @@
 Idea central: cada cuerpo tipo lamina se corta por su PLANO MEDIO. Esa seccion es
 exactamente la pieza a cortar, con ventanas y puertas ya recortadas, sin booleanas.
 """
+import functools
 import warnings
 
 import numpy as np
@@ -30,10 +31,32 @@ MIN_AREA_SUP = 1.0            # m2: parche mas chico que esto es moldura, no pla
 COSTURA = 1e-4                # m: cierra las costuras entre triangulos vecinos
 
 
+class _SinCache:
+    """Lo que trimesh.bounds.oriented_bounds le pide a la malla (convex_hull y
+    vertices), sin guardar el casco en la cache de la malla."""
+
+    def __init__(self, malla):
+        self._malla = malla
+        self.vertices = malla.vertices
+
+    @functools.cached_property
+    def convex_hull(self):
+        from trimesh import convex
+        return convex.convex_hull(self._malla)
+
+
 def _obb(cuerpo):
-    """Ejes y extensiones de la caja orientada, ordenados de menor a mayor."""
-    T = cuerpo.bounding_box_oriented.primitive.transform
-    ext = np.array(cuerpo.bounding_box_oriented.primitive.extents, dtype=float)
+    """Ejes y extensiones de la caja orientada, ordenados de menor a mayor.
+
+    Es `cuerpo.bounding_box_oriented` paso por paso, pero el casco convexo que
+    necesita se tira al salir: la propiedad de trimesh lo deja en la cache de
+    CADA cuerpo, y con los 17 924 de "Ya ahora si el final.skp" eso subio el
+    proceso de 2.4 a 7.9 GB (15 sep 2026)."""
+    from trimesh import bounds, primitives
+    to_origin, extents = bounds.oriented_bounds(_SinCache(cuerpo))
+    caja = primitives.Box(transform=np.linalg.inv(to_origin), extents=extents, mutable=False)
+    T = caja.primitive.transform
+    ext = np.array(caja.primitive.extents, dtype=float)
     ejes = np.array([T[:3, 0], T[:3, 1], T[:3, 2]])
     orden = np.argsort(ext)
     return ejes[orden], ext[orden], T[:3, 3]
@@ -90,6 +113,38 @@ def _soldar(mesh):
     return m
 
 
+def poligonos_llenos(plano):
+    """(poligonos con huecos, se_rompio). Es `plano.polygons_full` sin su trampa.
+
+    trimesh deja en None el contorno que no puede reparar (lo dice su propio
+    polygons_closed) y luego polygons_full le pide `.exterior` a ese None: una
+    sola seccion sucia tumbaba el despiece entero. Paso con "Ya ahora si el
+    final.skp" (15 sep 2026, 5.3 M caras). Si trimesh truena, se arma igual que
+    el, saltando los contornos None y los que no se dejan reparar; sin error la
+    salida es la de trimesh tal cual."""
+    try:
+        return [p for p in plano.polygons_full if p is not None], False
+    except Exception:
+        pass
+    from trimesh.path.polygons import repair_invalid
+    salida = []
+    try:
+        cerrados, dentro = plano.polygons_closed, plano.enclosure_directed
+        raices = plano.root
+    except Exception:
+        return salida, True
+    for raiz in raices:
+        if cerrados[raiz] is None:
+            continue
+        huecos = [np.array(cerrados[h].exterior.coords)[::-1]
+                  for h in dentro[raiz].keys() if cerrados[h] is not None]
+        try:
+            salida.append(repair_invalid(Polygon(shell=cerrados[raiz].exterior, holes=huecos)))
+        except Exception:
+            continue
+    return salida, True
+
+
 # el umbral de area mas permisivo de los dos que piden los clientes de esta
 # funcion: extraer_placas tira a 1e-6 y cuerpos_macizos a 1e-9. Se prefiltra con
 # el flojo y cada quien aplica el suyo en su propio loop, para no cambiarle el
@@ -136,6 +191,11 @@ def preparar_cuerpos(mesh, min_caras=4, min_area=AREA_ASTILLA):
     dando el mismo numero.
     """
     m = _soldar(mesh)
+    # trimesh.load de un .ply guarda el archivo crudo en metadata['_ply_raw'] y
+    # submesh le hace deepcopy a la metadata POR CUERPO. Con la cache de "Ya ahora
+    # si el final.skp" (91 MB crudos, 17 924 cuerpos) eso eran ~1.6 TB: macOS mato
+    # el proceso a los ~40 GB (15 sep 2026). Nadie lo lee; se quita de la copia.
+    m.metadata.pop('_ply_raw', None)
     if len(m.faces) == 0:
         return m, [], []
     comps = connected_components(m.face_adjacency,
@@ -624,7 +684,7 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
             descartados.append((idx, 'no se pudo seccionar: %s' % e))
             continue
 
-        polis = [p for p in plano.polygons_full if p.area >= min_area]
+        polis = [p for p in poligonos_llenos(plano)[0] if p.area >= min_area]
         if not polis:
             descartados.append((idx, 'seccion vacia'))
             continue

@@ -472,5 +472,128 @@ class Auditoria(Base):
         self.assertEqual(len(app._nombre_seguro('a' * 250 + '.stl', acentos=True)), 84)
 
 
+class SkpPesado(Base):
+    """15 sep 2026: un .skp con 422 MB de geometria se quedaba 10 min paginando."""
+
+    def _skp(self, mb):
+        ruta = os.path.join(self.tmp, 'casa.skp')
+        with zipfile.ZipFile(ruta, 'w', zipfile.ZIP_DEFLATED) as z:
+            z.writestr('model.dat', b'\0' * int(mb * 1e6))
+        return ruta
+
+    def test_geometria_de_mas_se_rechaza_sin_abrir(self):
+        import skp
+        ruta = self._skp(2)
+        with mock.patch.object(skp, 'MAX_GEOMETRIA_MB', 1), \
+                mock.patch('openskp.SkpFile.open') as abrir:
+            with self.assertRaises(SystemExit) as e:
+                skp.cargar_skp(ruta, usar_cache=False)
+        self.assertIn('2 MB de geometria', str(e.exception))
+        abrir.assert_not_called()
+
+    def test_debajo_del_tope_si_se_abre(self):
+        import skp
+        ruta = self._skp(2)
+        with mock.patch.object(skp, 'MAX_GEOMETRIA_MB', 3), \
+                mock.patch('openskp.SkpFile.open', side_effect=ValueError('x')) as abrir:
+            with self.assertRaises(SystemExit) as e:
+                skp.cargar_skp(ruta, usar_cache=False)
+        abrir.assert_called_once()
+        self.assertNotIn('geometria', str(e.exception))
+
+    def test_por_componente_da_lo_mismo_que_openskp(self):
+        """El iterador que abre F901/7017/7117 entrega las mismas hojas, en el
+        mismo orden, que el de openskp (que arma F901 entero de golpe)."""
+        import struct
+        import skp
+        from openskp import _core
+        openskp_iter = skp._ITER_OPENSKP or _core.iter_top_level_lazy
+        self.assertIsNot(openskp_iter, skp._por_componente)
+
+        def rec(tag, cuerpo):
+            return bytes.fromhex(tag) + struct.pack('<I', len(cuerpo)) + cuerpo
+
+        def comp(n):
+            return rec('7C15', rec('7D15', bytes([n]) * 16) + rec('7E15', b'comp%d' % n)
+                       + rec('D007', rec('D107', bytes([n]))))
+        data = rec('F401', rec('F601', rec('D007', b'raiz'))
+                   + rec('F901', rec('7017', rec('6300', b'x') + rec('7117',
+                         comp(1) + rec('6300', b'y') + comp(2) + comp(3))))
+                   + rec('F801', b'fin'))
+
+        def hojas(iterador):
+            out, tops = [], []
+
+            def walk(n):
+                if n['children']:
+                    for h in n['children']:
+                        walk(h)
+                elif n['tag'] not in skp._ENVOLTURAS:
+                    out.append((n['tag'], bytes(n['payload'])))
+            for _, _, nodo in iterador(data, 0, len(data), _core.CONTAINER_TAGS):
+                tops.append(nodo['tag'])
+                walk(nodo)
+            return out, tops
+
+        viejo, tops_viejo = hojas(openskp_iter)
+        nuevo, tops_nuevo = hojas(skp._por_componente)
+        self.assertEqual(len(viejo), 13)
+        self.assertEqual(nuevo, viejo)
+        self.assertEqual(tops_viejo.count('7C15'), 0)     # openskp: F901 de un bloque
+        self.assertEqual(tops_nuevo.count('7C15'), 3)     # aqui: cada componente aparte
+    def test_seccion_con_contorno_irreparable_no_tumba(self):
+        """15 sep 2026: trimesh deja None un contorno que no repara y polygons_full
+        le pide .exterior; con 5.3 M caras eso tumbaba extraer_placas."""
+        from types import SimpleNamespace
+        from shapely.geometry import box
+        import placas
+
+        class PlanoRoto(SimpleNamespace):
+            @property
+            def polygons_full(self):
+                raise AttributeError("'NoneType' object has no attribute 'exterior'")
+
+        plano = PlanoRoto(polygons_closed=[box(0, 0, 10, 10), None, box(2, 2, 4, 4), None],
+                          root=[0, 1], enclosure_directed={0: {2: {}, 3: {}}, 1: {}})
+        polis, rota = placas.poligonos_llenos(plano)
+        self.assertTrue(rota)
+        self.assertEqual(len(polis), 1)
+        self.assertAlmostEqual(polis[0].area, 100 - 4)      # el hueco se conserva
+        self.assertEqual(len(polis[0].interiors), 1)
+
+        sano = SimpleNamespace(polygons_full=[box(0, 0, 1, 1)])
+        self.assertEqual(placas.poligonos_llenos(sano), ([sano.polygons_full[0]], False))
+
+    def test_cuerpos_sin_el_ply_crudo(self):
+        """15 sep 2026: submesh copia la metadata por cuerpo y la de un .ply trae el
+        archivo crudo (_ply_raw): 17 924 cuerpos x 91 MB tumbaron la Mac."""
+        import placas
+        cubos = [trimesh.creation.box(extents=(1, 1, 0.1)).apply_translation((3 * k, 0, 0))
+                 for k in range(3)]
+        m = trimesh.util.concatenate(cubos)
+        m.metadata['_ply_raw'] = {'vertex': np.zeros(10)}
+        soldada, cuerpos, _ = placas.preparar_cuerpos(m)
+        self.assertEqual(len(cuerpos), 3)
+        self.assertTrue(all('_ply_raw' not in c.metadata for c in cuerpos))
+        self.assertNotIn('_ply_raw', soldada.metadata)
+        self.assertIn('_ply_raw', m.metadata)              # el modelo original no se toca
+
+    def test_obb_no_deja_el_casco_en_el_cuerpo(self):
+        """15 sep 2026: bounding_box_oriented guarda el casco convexo en la cache de
+        cada cuerpo; con 17 924 cuerpos el proceso subio de 2.4 a 7.9 GB."""
+        import placas
+        c = trimesh.creation.box(extents=(2, 1, 0.1))
+        c.apply_transform(trimesh.transformations.rotation_matrix(0.4, (1, 1, 0)))
+        ejes, ext, centro = placas._obb(c)
+        self.assertNotIn('convex_hull', c._cache.cache)
+        self.assertNotIn('bounding_box_oriented', c._cache.cache)
+        T = c.copy().bounding_box_oriented.primitive.transform
+        ext_trimesh = np.array(c.copy().bounding_box_oriented.primitive.extents, dtype=float)
+        orden = np.argsort(ext_trimesh)
+        np.testing.assert_array_equal(ext, ext_trimesh[orden])
+        np.testing.assert_array_equal(ejes, np.array([T[:3, 0], T[:3, 1], T[:3, 2]])[orden])
+        np.testing.assert_array_equal(centro, T[:3, 3])
+
+
 if __name__ == '__main__':
     unittest.main()

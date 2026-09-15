@@ -565,15 +565,11 @@ def rebanar(mesh, cfg, min_area_mm2=4.0):
 
         # Con una malla sucia, la rebanada sale como contorno que se cruza a si
         # mismo y trimesh se rinde ("unable to recover polygon"). Antes eso
-        # tumbaba TODO el despiece por una sola capa mala. Se intenta el camino
-        # de repuesto y, si tampoco, se pierde esa capa y se avisa.
-        try:
-            anillos = plano.polygons_full
-        except Exception:
-            try:
-                anillos = [g.buffer(0) for g in plano.polygons_closed if g is not None]
-            except Exception:
-                anillos = []
+        # tumbaba TODO el despiece por una sola capa mala. poligonos_llenos
+        # salta el contorno roto y conserva los huecos del resto; se avisa.
+        from placas import poligonos_llenos
+        anillos, rota = poligonos_llenos(plano)
+        if rota:
             capas_malas.append(i + 1)
 
         polys = []

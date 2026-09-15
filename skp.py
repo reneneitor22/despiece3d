@@ -77,11 +77,77 @@ def info_skp(ruta):
     }
 
 
-def _abrir(ruta):
+# Tope de geometria (15 sep 2026). Sin _por_componente (abajo), openskp gastaba
+# ~30x el model.dat en RAM: "Ya ahora si el final.skp" (422 MB) pedia ~13 GB y la
+# Mac de 8 GB se quedaba paginando. Con _por_componente lee en 3 min con 1.7 GB
+# de pico (~4x). 1000 MB ~ 4 GB: arriba de eso, mejor avisar que tumbar la Mac.
+# ponytail: tope por MB de model.dat, no por caras reales; con mas RAM, subirlo.
+MAX_GEOMETRIA_MB = float(os.environ.get('DESPIECE_MAX_SKP_MB', '1000'))
+
+
+def _geometria_mb(ruta):
+    """MB de model.dat sin descomprimirlo: el .skp 2021+ es un ZIP con prefijo y
+    el tamaño viene en su directorio (4 ms). None en el formato viejo."""
+    import zipfile
     try:
-        from openskp import SkpFile
+        with zipfile.ZipFile(ruta) as z:
+            return z.getinfo('model.dat').file_size / 1e6
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
+
+
+# Leer componente por componente (15 sep 2026). openskp ya lee "un registro de
+# arriba a la vez", pero SketchUp mete TODAS las definiciones de componentes en
+# F901/7017/7117: en "Ya ahora si el final.skp" ese registro es el 100% de los
+# 422 MB y el arbol entero se armaba de golpe. Abriendo esas tres envolturas el
+# pico queda en el componente mas grande (25 MB de 700). Esas etiquetas no las
+# busca nadie en openskp (solo estan en CONTAINER_TAGS) y todos sus recorridos
+# bajan a los hijos igual, en el mismo orden: el resultado no cambia.
+_ENVOLTURAS = frozenset({'F901', '7017', '7117'})
+_ITER_OPENSKP = None      # el de openskp, guardado al parchar (lo usan las pruebas)
+
+
+def _por_componente(data, start, end, container_tags=None):
+    from openskp import _core
+    if container_tags is None:
+        container_tags = _core.CONTAINER_TAGS
+    arriba = _core._flat_headers(data, start, end)
+    if len(arriba) == 1 and arriba[0][0] == 'F401':
+        _, o, s = arriba[0]
+        arriba = _core._flat_headers(data, o + 6, o + 6 + s)
+    registros = []
+
+    def abrir(headers):
+        for t, o, s in headers:
+            if t in _ENVOLTURAS and s > 0:
+                abrir(_core._flat_headers(data, o + 6, o + 6 + s))
+            else:
+                registros.append((t, o, s))
+
+    abrir(arriba)
+    for i, (t, o, s) in enumerate(registros):
+        nodos = _core.parse_tlv_recursive(data, o, o + 6 + s, container_tags)
+        if nodos:
+            yield i, len(registros), nodos[0]
+
+
+def _abrir(ruta):
+    mb = _geometria_mb(ruta)
+    if mb and mb > MAX_GEOMETRIA_MB:
+        raise SystemExit(
+            'el modelo trae %.0f MB de geometria y el tope en esta computadora es de %.0f MB: '
+            'con mas, la memoria no alcanza. Casi siempre son muebles, arboles, gente o '
+            'coches de 3D Warehouse. Borralos, purga lo que no se usa (Ventana > Informacion '
+            'del modelo > Estadisticas > Purgar elementos no usados) y vuelve a guardar: '
+            'para el despiece solo hacen falta muros, losas y techos.' % (mb, MAX_GEOMETRIA_MB))
+    try:
+        from openskp import SkpFile, _core
     except ImportError:
         raise SystemExit(_AYUDA_INSTALAR)
+    global _ITER_OPENSKP
+    if _core.iter_top_level_lazy is not _por_componente:     # full_parse la busca ahi
+        _ITER_OPENSKP = _core.iter_top_level_lazy
+        _core.iter_top_level_lazy = _por_componente
     try:
         return SkpFile.open(ruta)
     except Exception as e:

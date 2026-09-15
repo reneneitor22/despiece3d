@@ -49,14 +49,19 @@ dbg.JOBS_DIR = JOBS
 # con mas memoria: DESPIECE_MAX_MB, DESPIECE_MAX_CARAS, DESPIECE_TRABAJOS.
 MAX = int(os.environ.get('DESPIECE_MAX_MB', '500')) * 1024 * 1024
 MAX_MB = MAX // (1024 * 1024)   # el tope se escribe UNA vez: pantalla y error salen de aqui
-MAX_CARAS = int(os.environ.get('DESPIECE_MAX_CARAS', '2000000'))
+# 15 sep 2026: de 2 a 6 millones. "Ya ahora si el final.skp" (5.3 M caras) ya sale
+# en esta Mac de 8 GB (~8.3 GB de footprint con swap) tras los arreglos de skp.py y
+# placas.py. ponytail: tope fijo por caras; con mas RAM, subir DESPIECE_MAX_CARAS.
+MAX_CARAS = int(os.environ.get('DESPIECE_MAX_CARAS', '6000000'))
 TRABAJOS = max(1, int(os.environ.get('DESPIECE_TRABAJOS', '1')))
 HORAS_JOBS = float(os.environ.get('DESPIECE_HORAS', '48'))      # luego se borran
 # Las fallas NO van en JOBS (/tmp, se barre): aqui se quedan hasta revisarlas.
 # ponytail: sin barrido; con cientos de casos, borrar a mano los ya resueltos.
 CASOS = os.path.join(BASE, 'casos')
 # Un corte que pasa de esto se mata: se guarda el caso y la fila sigue.
-MAX_MIN = float(os.environ.get('DESPIECE_MAX_MIN', '10'))
+# 15 sep 2026: de 10 a 40 min. Ese mismo modelo tarda 26.6 min (26 en extraer_placas,
+# 17 924 cuerpos). Ojo: un solo corte a la vez, asi que la fila espera lo que tarde.
+MAX_MIN = float(os.environ.get('DESPIECE_MAX_MIN', '40'))
 _CORTE = None      # (modulo, funcion) que corre el proceso aparte; None = _procesar. Solo pruebas.
 TOPE_CACHE = int(float(os.environ.get('DESPIECE_CACHE_GB', '3')) * (1 << 30))
 from subida import leer_multipart, SubidaMala

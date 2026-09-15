@@ -299,10 +299,10 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
     dbg.marcar('macizos')
     if laminar_macizos:
         piezas_macizas, resumen_macizos = rebanar_solidos(mesh, cfg,
-                                                          preparado=preparado)
+                                                          preparado=preparado, obbs=obbs)
     else:
         try:
-            n_mac = len(cuerpos_macizos(mesh, cfg, preparado=preparado))
+            n_mac = len(cuerpos_macizos(mesh, cfg, preparado=preparado, obbs=obbs))
         except Exception:
             n_mac = 0
         if n_mac:
