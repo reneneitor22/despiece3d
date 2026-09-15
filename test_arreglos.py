@@ -416,8 +416,10 @@ class Servidor(Base):
             time.sleep(0.2)
             with lock:
                 activos[0] -= 1
-            return {'ok': True}
-        with mock.patch.object(app, '_procesar', falso), mock.patch.object(app, 'TRABAJOS', 1):
+            return {'ok': True}, None
+        # _correr_aparte y no _procesar: el corte va en otro proceso y el parche
+        # no llegaria alla; la fila se decide aqui, en el servidor
+        with mock.patch.object(app, '_correr_aparte', falso), mock.patch.object(app, 'TRABAJOS', 1):
             hilos = [threading.Thread(target=app.procesar,
                                       args=('x', {}, self.ruta('j%d' % i), 'j%011d' % i, 'x'))
                      for i in range(3)]

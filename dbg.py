@@ -54,12 +54,28 @@ _PROGRESO = {}
 _PLOCK = threading.Lock()
 
 
-def marcar(etapa_nombre, job=None):
+# El corte corre en OTRO proceso (app._correr_aparte) y /progreso lo contesta el
+# servidor: el hijo pone aqui una funcion que le manda cada etapa por el tubo.
+al_marcar = None
+
+
+def _poner(etapa_nombre, job=None):
     job = job or _job()
     if not job:
         return
     with _PLOCK:
         _PROGRESO[job] = (etapa_nombre, time.time())
+    if al_marcar:
+        try:
+            al_marcar(etapa_nombre)
+        except Exception:
+            pass
+
+
+def marcar(etapa_nombre, job=None):
+    """Un paso suelto (sin bloque): va a la barra y, prendido, al log."""
+    _poner(etapa_nombre, job)
+    log('paso', paso=etapa_nombre)
 
 
 def progreso(job):
@@ -114,7 +130,7 @@ def log(evento, nivel='info', **campos):
 @contextlib.contextmanager
 def etapa(nombre, **campos):
     """Envuelve un bloque: registra .inicio, .fin con ms, o .error con traceback."""
-    marcar(nombre)
+    _poner(nombre)                 # etapa ya registra su .inicio: sin 'paso' doble
     log(nombre + '.inicio', **campos)
     t0 = time.perf_counter()
     try:

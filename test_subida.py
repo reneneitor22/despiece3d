@@ -34,6 +34,19 @@ def multipart(campos, archivo):
     return 'multipart/form-data; boundary=' + b, b''.join(out)
 
 
+def _truena(*args):
+    1 / 0
+
+
+def _colgado(*args):
+    """Se queda pensando para siempre, como un modelo que traba al motor."""
+    import time
+    with open(os.environ['DESPIECE_PRUEBA_PID'], 'w') as f:
+        f.write(str(os.getpid()))
+    dbg.marcar('uniones')
+    time.sleep(300)
+
+
 class TestParse(unittest.TestCase):
     def test_meta(self):
         ctype, cuerpo = multipart({'a': '1', 'b': '', 'c': 'z'}, ('m.stl', b'DATA'))
@@ -103,7 +116,7 @@ class TestPOST(unittest.TestCase):
                                            test_ifc._ifc_de_prueba().encode()))
         status, d = self._post(ctype, cuerpo)
         self.assertEqual(status, 200, d)
-        self.assertEqual(d['por_tipo'], {'muro': 2, 'losa': 1, 'techo': 0}, d)
+        self.assertEqual(d.get('por_tipo'), {'muro': 2, 'losa': 1, 'techo': 0}, d)
         self.assertTrue(any('IFC trae los elementos nombrados' in a
                             for a in d.get('avisos', [])), d.get('avisos'))
         log = os.path.join(dbg.JOBS_DIR, d['job'], 'debug.log')
@@ -137,17 +150,42 @@ class TestPOST(unittest.TestCase):
         self.assertEqual(r['error'], d['error'])
 
     def test_si_truena_tambien_deja_caso_con_traceback(self):
-        original = app._procesar
-        app._procesar = lambda *a: 1 / 0
+        app._CORTE = ('test_subida', '_truena')
         try:
             status, d = self._post(*multipart({'modo': 'curvas'}, ('cubo.stl', CUBO_STL)))
         finally:
-            app._procesar = original
-        self.assertEqual(status, 500)
+            app._CORTE = None
+        self.assertIn('ZeroDivisionError', d['error'])
         base = os.path.join(app.CASOS, d['caso'])
         with open(os.path.join(base, 'caso.json'), encoding='utf-8') as f:
             self.assertIn('ZeroDivisionError', json.load(f)['traceback'])
         self.assertEqual(os.listdir(os.path.join(base, 'entrada')), ['cubo.stl'])
+
+    def test_corte_colgado_se_detiene_guarda_caso_y_la_fila_sigue(self):
+        import tempfile
+        import time
+        pid_txt = os.path.join(tempfile.mkdtemp(), 'pid')
+        os.environ['DESPIECE_PRUEBA_PID'] = pid_txt
+        tope = app.MAX_MIN
+        app._CORTE, app.MAX_MIN = ('test_subida', '_colgado'), 4 / 60.0
+        t0 = time.time()
+        try:
+            status, d = self._post(*multipart({'modo': 'curvas'}, ('cubo.stl', CUBO_STL)))
+        finally:
+            app._CORTE, app.MAX_MIN = None, tope
+        self.assertLess(time.time() - t0, 30)
+        # la etapa en la que se atoro llego desde el otro proceso
+        self.assertIn('Armando las uniones', d['error'])
+        self.assertTrue(os.path.exists(os.path.join(app.CASOS, d['caso'], 'caso.json')))
+        if os.name != 'nt':
+            with open(pid_txt) as f:
+                pid = int(f.read())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)                   # el colgado ya no existe
+        campos = {'modo': 'curvas', 'unidades': 'm', 'modo_escala': 'escala',
+                  'escala': '10', 'espesor': '3', 'hoja': '500x700'}
+        status, d2 = self._post(*multipart(campos, ('cubo.stl', CUBO_STL)))
+        self.assertTrue(d2.get('ok'), d2)         # la fila quedo libre
 
 
 if __name__ == '__main__':

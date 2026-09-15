@@ -9,6 +9,7 @@ from placas import (extraer_placas, nombrar, marcar_envolvente,
                     niveles_de_piso, cortar_por_piso, huellas_en_losas,
                     asignar_planta, preparar_cuerpos, tabla_obb)
 from uniones import detectar_contactos, aplicar_uniones, recortar_choques
+import dbg     # dbg.marcar: la pantalla dice en cual de estos pasos va (o se atoro)
 
 DIENTE_OBJ_MM = 12.0      # ancho buscado del diente, en mm de maqueta
 HOLGURA_MM = 0.06         # juego de la ranura
@@ -196,7 +197,9 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
         # Soldar el modelo y partirlo en cuerpos es, de lejos, el paso mas caro
         # del pipeline. Lo piden extraer_placas y cuerpos_macizos por igual,
         # sobre los MISMOS cuerpos: se hace una vez aqui y se les pasa hecho.
+        dbg.marcar('preparar_cuerpos')
         preparado = preparar_cuerpos(mesh)
+    dbg.marcar('extraer_placas')
     obbs = tabla_obb(preparado[1])
 
     # el espesor del carton llevado a unidades del modelo: lo necesita el camino
@@ -282,15 +285,18 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
                               % (len(placas) + len(fuera_por_tope), MAX_PLACAS,
                                  len(fuera_por_tope)))
     if con_uniones:
+        dbg.marcar('uniones')
         contactos = detectar_contactos(placas, t_mod)
         n_uniones = aplicar_uniones(placas, contactos, t_mod,
                                     diente_obj=DIENTE_OBJ_MM / cfg.a_mm,
                                     holgura_modelo=HOLGURA_MM / cfg.a_mm)
+        dbg.marcar('recortar_choques')
         n_recortes, avisos_recorte = recortar_choques(placas, contactos, t_mod)
 
     # Escaleras, barandales y muebles no son laminas y placas.py los descarta.
     # Para maqueta la salida es laminarlos: rebanadas horizontales que se apilan.
     piezas_macizas, resumen_macizos = [], []
+    dbg.marcar('macizos')
     if laminar_macizos:
         piezas_macizas, resumen_macizos = rebanar_solidos(mesh, cfg,
                                                           preparado=preparado)
@@ -316,6 +322,7 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
     # despues de recortar_choques porque ese paso todavia mueve la geometria.
     n_huellas = 0
     if grabar_planta:
+        dbg.marcar('planta_grabada')
         try:
             n_huellas = huellas_en_losas(placas, t_min=t_mod)
         except Exception as e:

@@ -19,11 +19,18 @@ PASOS = {
     'parse': ('Leyendo la subida', 10),
     'guardar': ('Guardando el modelo', 14),
     'ejemplo.copiar': ('Copiando el ejemplo', 14),
+    'arrancando': ('Preparando el motor', 16),
     'cargar_modelo': ('Abriendo el modelo', 20),
     'solidificar': ('Cerrando la malla', 28),
     'rebanar': ('Rebanando', 40),
     'armar_piezas': ('Armando las piezas', 52),
-    'despiece_estructural': ('Sacando muros, losas y techos', 52),
+    'despiece_estructural': ('Revisando el modelo', 26),
+    'preparar_cuerpos': ('Separando el modelo en cuerpos', 30),
+    'extraer_placas': ('Sacando muros, losas y techos', 38),
+    'uniones': ('Armando las uniones entre piezas', 46),
+    'recortar_choques': ('Recortando choques entre piezas', 52),
+    'macizos': ('Revisando escaleras y muebles', 56),
+    'planta_grabada': ('Grabando la planta en las losas', 60),
     'partir_grandes': ('Partiendo las que no caben en la hoja', 64),
     'acomodar': ('Acomodando en las hojas', 76),
     'export.hoja': ('Escribiendo las hojas', 86),
@@ -48,6 +55,9 @@ HORAS_JOBS = float(os.environ.get('DESPIECE_HORAS', '48'))      # luego se borra
 # Las fallas NO van en JOBS (/tmp, se barre): aqui se quedan hasta revisarlas.
 # ponytail: sin barrido; con cientos de casos, borrar a mano los ya resueltos.
 CASOS = os.path.join(BASE, 'casos')
+# Un corte que pasa de esto se mata: se guarda el caso y la fila sigue.
+MAX_MIN = float(os.environ.get('DESPIECE_MAX_MIN', '10'))
+_CORTE = None      # (modulo, funcion) que corre el proceso aparte; None = _procesar. Solo pruebas.
 TOPE_CACHE = int(float(os.environ.get('DESPIECE_CACHE_GB', '3')) * (1 << 30))
 from subida import leer_multipart, SubidaMala
 EXT_OK = {'.stl', '.obj', '.ply', '.glb', '.gltf', '.dae', '.off', '.3mf', '.skp',
@@ -650,6 +660,87 @@ def _cajetin(nombre, cfg, campos):
     return lineas
 
 
+def _corte_aparte(tubo, corte, args, debug):
+    """Corre en OTRO proceso. Si ahi se cuelga o se come la memoria, el servidor
+    lo mata sin caerse. Manda cada etapa por el tubo y al final el resultado."""
+    if hasattr(os, 'setsid'):
+        os.setsid()     # grupo propio: al matarlo se van tambien dwgwrite o AutoCAD
+    ruta_modelo, campos, carpeta, job, nombre = args
+    dbg.set_request(debug)
+    dbg.set_job(job)
+    dbg.al_marcar = lambda etapa: tubo.send(('etapa', etapa))
+    avisos, tb = [], None
+    try:
+        if corte:
+            import importlib
+            f = getattr(importlib.import_module(corte[0]), corte[1])
+        else:
+            f = _procesar
+        r = f(ruta_modelo, campos, carpeta, job, nombre, avisos)
+    except SystemExit as e:
+        r = {'error': str(e)}
+    except Exception as e:
+        tb = traceback.format_exc()
+        r = {'error': '%s: %s' % (type(e).__name__, e)}
+    tubo.send(('fin', r, avisos, tb))
+
+
+def _paso(etapa):
+    return PASOS.get(etapa, (etapa or '?', 0))[0]
+
+
+def _correr_aparte(ruta_modelo, campos, carpeta, job, nombre, avisos):
+    """(resultado, traceback). El corte va en otro proceso con tope de MAX_MIN.
+
+    Antes corria en el hilo del servidor: un modelo que trababa al motor dejaba
+    el contador subiendo para siempre, la fila tapada (un corte a la vez) y
+    ningun caso guardado, y la unica salida era reiniciar la app."""
+    import multiprocessing as mp
+    ctx = mp.get_context('spawn')        # fork con hilos vivos no es seguro en macOS
+    lee, escribe = ctx.Pipe(duplex=False)
+    p = ctx.Process(target=_corte_aparte, daemon=True,
+                    args=(escribe, _CORTE, (ruta_modelo, campos, carpeta, job, nombre),
+                          dbg.activo()))
+    etapa, limpio = 'arrancando', False
+    dbg.marcar(etapa, job)
+    p.start()
+    escribe.close()        # asi, si el hijo muere, recv() da EOF en vez de esperar
+    t0 = time.time()
+    try:
+        while time.time() - t0 < MAX_MIN * 60:
+            if not lee.poll(1):
+                continue
+            try:
+                msg = lee.recv()
+            except EOFError:
+                p.join(5)
+                dbg.log('procesar.murio', nivel='error', etapa=etapa, codigo=p.exitcode)
+                return {'error': 'el corte se cayo en "%s" (codigo %s)'
+                                 % (_paso(etapa), p.exitcode)}, None
+            if msg[0] == 'etapa':
+                etapa = msg[1]
+                dbg.marcar(etapa, job)
+                continue
+            avisos.extend(msg[2])
+            limpio = True
+            return msg[1], msg[3]
+        dbg.log('procesar.tope', nivel='error', etapa=etapa, minutos=MAX_MIN)
+        return {'error': 'el corte paso de %g min en "%s" y se detuvo. Algo del modelo '
+                         'traba al motor' % (MAX_MIN, _paso(etapa))}, None
+    finally:
+        p.join(5 if limpio else 0.1)
+        if p.is_alive() or not limpio:
+            try:
+                if hasattr(os, 'killpg'):
+                    os.killpg(p.pid, signal.SIGKILL)
+                else:
+                    p.kill()
+            except OSError:
+                p.kill()
+            p.join(5)
+        lee.close()
+
+
 def procesar(ruta_modelo, campos, carpeta, job, nombre):
     """Espera su turno, corta, y limpia lo que ya no se ocupa.
 
@@ -671,9 +762,9 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
     tb = None
     guardado = False
     try:
-        r = _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos)
-    except SystemExit as e:
-        r = {'error': str(e)}
+        r, tb = _correr_aparte(ruta_modelo, campos, carpeta, job, nombre, avisos)
+        if tb:
+            dbg.log('procesar.truena', nivel='error', traceback=tb)
     except Exception:
         tb = traceback.format_exc()
         raise
