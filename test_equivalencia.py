@@ -243,5 +243,92 @@ class ExtraerPlacasDaLoMismo(unittest.TestCase):
                          'cambio el conteo de descartados que ve el alumno')
 
 
+def _fundir_una_vuelta_viejo(pl, t_modelo, min_encime=0.05):
+    """_fundir_una_vuelta antes del prefiltro (14 sep 2026): cada placa contra todas.
+
+    Solo la parte que decide QUIEN se funde con quien; el armado de la placa
+    fundida se toma de placas.py, que no cambio."""
+    datos = []
+    for p in pl:
+        n = np.array(p['normal'], dtype=float)
+        n = n / np.linalg.norm(n)
+        if n[int(np.argmax(np.abs(n)))] < 0:
+            n = -n
+        datos.append((n, float(np.dot(n, np.asarray(p['centro'], dtype=float)))))
+    tomadas, grupos = set(), []
+    orden = sorted(range(len(pl)), key=lambda k: -pl[k]['area'])
+    for i in orden:
+        if i in tomadas:
+            continue
+        ni, di = datos[i]
+        F = placas._frame_desde_normal(ni, ni * di)
+        base = placas._proyectar_a_marco(pl[i], F)
+        grupo, ds = [i], [di]
+        for j in orden:
+            if j == i or j in tomadas:
+                continue
+            nj, dj = datos[j]
+            if float(np.dot(ni, nj)) < 1 - placas.TOL_NORMAL:
+                continue
+            if min(abs(dj - d) for d in ds) >= t_modelo:
+                continue
+            otra = placas._proyectar_a_marco(pl[j], F)
+            try:
+                comun = base.intersection(otra).area
+            except Exception:
+                comun = 0.0
+            if comun <= min_encime * min(base.area, otra.area):
+                continue
+            grupo.append(j); ds.append(dj); tomadas.add(j)
+            try:
+                base = placas.unary_union([base, otra]).buffer(placas.COSTURA).buffer(-placas.COSTURA)
+                if base.geom_type != 'Polygon':
+                    base = max(base.geoms, key=lambda g: g.area)
+            except Exception:
+                pass
+        grupos.append(tuple(grupo))
+    return grupos
+
+
+def losas_revueltas(semilla, n=60):
+    """Muchas losas al MISMO nivel, unas encimadas y otras apiladas a menos de un
+    carton: el caso que tenia al prefiltro con trabajo. Mas algunos muros y una
+    losa ladeada, que no deben fundirse con las planas."""
+    rng = np.random.default_rng(semilla)
+    partes = []
+    for _ in range(n):
+        x, y = rng.uniform(0, 30, 2)
+        dz = rng.choice([0.0, 0.0, 0.0, 0.002, 0.0045, 0.2])   # apilada, pegada, lejos
+        partes.append(caja(rng.uniform(1, 6), rng.uniform(1, 6), 0.1, (x, y, dz)))
+    for _ in range(n // 6):
+        x, y = rng.uniform(0, 30, 2)
+        partes.append(caja(rng.uniform(2, 5), 0.12, 2.5, (x, y, 1.3)))
+    ladeada = caja(5.0, 4.0, 0.1, (10.0, 10.0, 0.0))
+    ladeada.apply_transform(trimesh.transformations.rotation_matrix(0.15, [1, 0, 0], [10, 10, 0]))
+    partes.append(ladeada)
+    return trimesh.util.concatenate(partes)
+
+
+class FundirDaLoMismo(unittest.TestCase):
+    """El prefiltro de fundir (14 sep 2026) no puede cambiar QUIEN se funde."""
+
+    def test_mismos_grupos_que_el_camino_viejo(self):
+        from unittest import mock
+        import copy
+        for semilla in range(6):
+            mesh = losas_revueltas(semilla)
+            # las placas ANTES de fundir: se apaga la fusion dentro de extraer_placas
+            with mock.patch.object(placas, 'fundir_pegadas', lambda pl, t, *a, **k: (pl, 0)):
+                crudas, _ = placas.extraer_placas(mesh, t_modelo=0.005)
+            self.assertGreater(len(crudas), 40, 'la prueba perdio su punto')
+            viejos = _fundir_una_vuelta_viejo(copy.deepcopy(crudas), 0.005)
+            sal, n = placas._fundir_una_vuelta(copy.deepcopy(crudas), 0.005)
+            self.assertGreater(n, 0, 'semilla %d: nada que fundir, no vigila nada' % semilla)
+            self.assertEqual(sorted(len(g) for g in viejos),
+                             sorted(p.get('fundida_de', 1) for p in sal),
+                             'semilla %d: cambiaron los grupos' % semilla)
+            self.assertEqual(n, sum(len(g) - 1 for g in viejos))
+
+
 if __name__ == '__main__':
     unittest.main()

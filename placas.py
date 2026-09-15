@@ -398,6 +398,19 @@ def _proyectar_a_marco(placa, F):
     return g if g.is_valid else g.buffer(0)
 
 
+_HOLGURA = 1e-6               # m: margen del prefiltro de fundir contra el redondeo
+
+
+def _caja_mundo(placa):
+    """(min, max) en el mundo de la silueta de la placa; con el contorno basta."""
+    pts = np.array(placa['poly'].exterior.coords)
+    if not len(pts):
+        return np.full(3, np.nan), np.full(3, np.nan)     # nan: nunca pasa el filtro
+    L3 = np.hstack([pts, np.zeros((len(pts), 1)), np.ones((len(pts), 1))])
+    W = (placa['a_mundo'] @ L3.T).T[:, :3]
+    return W.min(axis=0), W.max(axis=0)
+
+
 def _fundir_una_vuelta(placas, t_modelo, min_encime=0.05):
     """Dos placas paralelas mas juntas que el propio carton son UNA placa.
 
@@ -430,6 +443,20 @@ def _fundir_una_vuelta(placas, t_modelo, min_encime=0.05):
     tomadas, fundidas = set(), 0
     hechas = {}
     orden = sorted(range(len(placas)), key=lambda k: -placas[k]['area'])
+
+    # Prefiltro en numpy (14 sep 2026). Mandar cada placa contra TODAS a shapely era
+    # O(n^2): "Mediana Irving Parte 1" (3.7 km, miles de losas al mismo nivel) se
+    # quedaba horas aqui y tapaba la fila del servidor. Ahora a shapely solo llegan
+    # las que PUEDEN encimarse: casi paralelas, a menos de un carton y con su caja
+    # tocando la de la silueta del grupo. El filtro es holgado y las pruebas de
+    # siempre corren igual sobre lo que pasa, asi que la salida no cambia.
+    n_pl = len(placas)
+    pos = np.empty(n_pl, dtype=np.int64)
+    pos[orden] = np.arange(n_pl)
+    N = np.array([d[0] for d in datos])
+    D = np.array([d[1] for d in datos])
+    cajas = np.array([_caja_mundo(p) for p in placas])          # (n, 2, 3)
+    C, H = (cajas[:, 0] + cajas[:, 1]) / 2, (cajas[:, 1] - cajas[:, 0]) / 2
     for i in orden:
         if i in tomadas:
             continue
@@ -437,28 +464,49 @@ def _fundir_una_vuelta(placas, t_modelo, min_encime=0.05):
         F = _frame_desde_normal(ni, ni * di)
         base = _proyectar_a_marco(placas[i], F)
         grupo, ds = [i], [di]
-        for j in orden:
-            if j == i or j in tomadas:
-                continue
-            nj, dj = datos[j]
-            if float(np.dot(ni, nj)) < 1 - TOL_NORMAL:
-                continue
-            if min(abs(dj - d) for d in ds) >= t_modelo:
-                continue
-            otra = _proyectar_a_marco(placas[j], F)
-            try:
-                comun = base.intersection(otra).area
-            except Exception:
-                comun = 0.0
-            if comun <= min_encime * min(base.area, otra.area):
-                continue
-            grupo.append(j); ds.append(dj); tomadas.add(j)
-            try:
-                base = unary_union([base, otra]).buffer(COSTURA).buffer(-COSTURA)
-                if base.geom_type != 'Polygon':
-                    base = max(base.geoms, key=lambda g: g.area)
-            except Exception:
-                pass
+        # caja de cada placa vista en el plano de i: centro y medio ancho en 2D
+        A = np.linalg.inv(F)[:2]
+        c2 = C @ A[:, :3].T + A[:, 3]
+        r2 = H @ np.abs(A[:, :3]).T
+        libre = N @ ni >= 1 - TOL_NORMAL - _HOLGURA
+        libre[list(tomadas)] = False
+        libre[i] = False
+        desde = -1
+        while True:
+            # cada vez que el grupo crece se vuelve a filtrar: con la silueta y los
+            # planos nuevos pueden alcanzar placas que antes quedaban lejos
+            bx0, by0, bx1, by1 = base.bounds
+            cerca = np.abs(D[:, None] - np.array(ds)[None, :]).min(axis=1) < t_modelo + _HOLGURA
+            encima = ((c2[:, 0] + r2[:, 0] >= bx0 - _HOLGURA) & (c2[:, 0] - r2[:, 0] <= bx1 + _HOLGURA)
+                      & (c2[:, 1] + r2[:, 1] >= by0 - _HOLGURA) & (c2[:, 1] - r2[:, 1] <= by1 + _HOLGURA))
+            cand = np.nonzero(libre & cerca & encima & (pos > desde))[0]
+            crecio = False
+            for j in cand[np.argsort(pos[cand])].tolist():
+                if j == i or j in tomadas:
+                    continue
+                nj, dj = datos[j]
+                if float(np.dot(ni, nj)) < 1 - TOL_NORMAL:
+                    continue
+                if min(abs(dj - d) for d in ds) >= t_modelo:
+                    continue
+                otra = _proyectar_a_marco(placas[j], F)
+                try:
+                    comun = base.intersection(otra).area
+                except Exception:
+                    comun = 0.0
+                if comun <= min_encime * min(base.area, otra.area):
+                    continue
+                grupo.append(j); ds.append(dj); tomadas.add(j)
+                libre[j], desde, crecio = False, pos[j], True
+                try:
+                    base = unary_union([base, otra]).buffer(COSTURA).buffer(-COSTURA)
+                    if base.geom_type != 'Polygon':
+                        base = max(base.geoms, key=lambda g: g.area)
+                except Exception:
+                    pass
+                break
+            if not crecio:
+                break
 
         if len(grupo) == 1:
             hechas[i] = placas[i]
