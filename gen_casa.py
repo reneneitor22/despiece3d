@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Casa de prueba: muros con espesor y vanos, losa, techo a dos aguas y frontones."""
-import numpy as np, trimesh
+import os, numpy as np, trimesh
 from shapely.geometry import Polygon, box
 
 L, A, H = 8.0, 6.0, 2.7        # largo (X), ancho (Y), altura de muro (Z), en metros
@@ -66,6 +66,7 @@ for nombre, signo, y0 in (('techo_a', +1, 0.0), ('techo_b', -1, A)):
                             marco(X, dir_v, nrm, [0, y0, H]))
 
 casa = trimesh.util.concatenate(list(cuerpos.values()))
+os.makedirs('out', exist_ok=True)
 casa.export('out/casa_prueba.stl'); casa.export('out/casa_prueba.obj')
 print('casa %.2f x %.2f x %.2f m | %d cuerpos | %d caras'
       % (*casa.extents, len(cuerpos), len(casa.faces)))

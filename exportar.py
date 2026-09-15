@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Salidas: DXF por hoja (laser) + SVG/HTML imprimible (corte a mano) + guia de armado."""
+import html
 import os
 import ezdxf
 
@@ -487,7 +488,7 @@ td.id{font-family:ui-monospace,Menlo,monospace;font-weight:600}
 <h2 style="font-size:15px;margin:34px 0 10px">Orden de armado (de abajo hacia arriba)</h2>
 <table><thead><tr><th>Pieza</th><th>Altura real</th><th>Área</th><th>Hoja</th></tr></thead>
 <tbody>%(filas)s</tbody></table>
-</div>""" % dict(nombre=nombre, escala=int(cfg.escala), espesor=cfg.espesor_mm,
+</div>""" % dict(nombre=html.escape(nombre), escala=int(cfg.escala), espesor=cfg.espesor_mm,
                  hw=cfg.hoja[0], hh=cfg.hoja[1], kerf=cfg.kerf_mm,
                  n_piezas=stats['n_piezas'], n_hojas=stats['n_hojas'],
                  alto=stats['alto_mm'], material=stats.get('material_cm2', 0),
@@ -512,8 +513,10 @@ def guia_estructural(hojas, piezas, cfg, svgs, nombre, grandes, stats, info,
         avisos += ('<div class="aviso"><b>%d pieza(s) no caben en la hoja</b> (%s). '
                    'Sube la escala o usa una hoja más grande.</div>'
                    % (len(grandes), ', '.join(grandes)))
+    # El nombre y los avisos traen texto del alumno (nombre del archivo, nombres
+    # de elementos del IFC) y la guia se sirve como HTML: van escapados.
     for a in info.get('avisos', []):
-        avisos += '<div class="aviso">%s</div>' % a
+        avisos += '<div class="aviso">%s</div>' % html.escape(str(a))
     if info.get('descartados'):
         avisos += ('<div class="nota">Se ignoraron %d cuerpos que no son láminas '
                    '(astillas o sólidos macizos).</div>' % len(info['descartados']))
@@ -586,7 +589,7 @@ ol.pasos li{margin:4px 0}
 <div class="leyenda"><span><i style="color:#e11d48"></i>corte</span>
 <span><i style="color:#2563eb;border-top-style:dashed"></i>grabado — dónde apoya la otra pieza</span></div>
 %(laminas)s
-</div>""" % dict(nombre=nombre, escala=int(cfg.escala), espesor=cfg.espesor_mm,
+</div>""" % dict(nombre=html.escape(nombre), escala=int(cfg.escala), espesor=cfg.espesor_mm,
                  hw=cfg.hoja[0], hh=cfg.hoja[1], kerf=cfg.kerf_mm,
                  n_piezas=stats['n_piezas'], n_hojas=stats['n_hojas'],
                  n_uniones=info.get('n_uniones', 0), material=stats.get('material_cm2', 0),

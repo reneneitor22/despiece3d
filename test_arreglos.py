@@ -99,7 +99,10 @@ class Comprimidos(Base):
         trimesh.creation.box((7, 5, 3)).export(ajeno)
         src = self.ruta('src')
         os.makedirs(src)
-        os.symlink(ajeno, os.path.join(src, 'casa.stl'))
+        try:
+            os.symlink(ajeno, os.path.join(src, 'casa.stl'))
+        except (OSError, NotImplementedError):
+            raise unittest.SkipTest('este sistema no deja crear enlaces (Windows sin privilegio)')
         siete = self._7z(src, 'enlace.7z')
         with self.assertRaises(SystemExit) as e:
             desempacar(siete, self.ruta('sale'))
@@ -369,7 +372,8 @@ class Servidor(Base):
                 c1, a1, m1, leido = leer_multipart(io.BytesIO(body).read, len(body), self.B,
                                                    lambda n: ruta, trozo=trozo)
                 self.assertEqual((c0, m0, a0[0]), (c1, m1, a1[0]))
-                self.assertEqual(open(ruta, 'rb').read(), a0[1])
+                with open(ruta, 'rb') as f:              # abierto, Windows no deja reescribirlo
+                    self.assertEqual(f.read(), a0[1])
                 self.assertEqual(leido, len(body))
 
     def test_subida_cortada_no_pasa(self):                                  # [S3]
@@ -423,6 +427,47 @@ class Servidor(Base):
                 h.join()
         self.assertEqual(maximo[0], 1)
         self.assertEqual(app._ESPERA, [])
+
+
+# --------------------------------------------- auditoria de Aldo, 14 sep 2026
+class Auditoria(Base):
+    MALO = 'x<img src=x onerror=alert(1)>'
+
+    def test_guia_escapa_nombre_y_avisos(self):                            # [A1]
+        import exportar
+        from despiece import Config
+        stats = {'n_piezas': 0, 'n_hojas': 0, 'alto_mm': 0}
+        for guia in (exportar.guia_html([], [], Config(), [], self.MALO, [], stats),
+                     exportar.guia_estructural([], [], Config(), [], self.MALO, [], stats,
+                                               {'avisos': [self.MALO]})):
+            self.assertNotIn('<img', guia)
+            self.assertIn('&lt;img', guia)
+
+    def test_job_con_carpeta_no_se_reusa(self):                            # [A2]
+        import app
+        h = app.H.__new__(app.H)
+        h.path = '/cortar?job=abcdef012345'
+        with mock.patch.object(app, 'JOBS', self.tmp):
+            self.assertEqual(h._job_pedido(), 'abcdef012345')
+            self.assertNotEqual(h._job_pedido(), 'abcdef012345')
+
+    def test_parametros_fuera_de_rango(self):                              # [A4]
+        import app
+        for v in ('nan', 'inf', '0', '-3', 'abc', '1e9', None):
+            with self.assertRaises(ValueError):
+                app._numero(v, 'el espesor', 0.3, 50)
+        self.assertEqual(app._numero('2', 'el espesor', 0.3, 50), 2.0)
+        # Se contesta antes de abrir el modelo (aqui ni existe).
+        r = app._procesar(self.ruta('no_existe.stl'), {'kerf': '1e9'}, self.tmp, 'j', 'x', [])
+        self.assertIn('kerf', r['error'])
+
+    def test_nombre_de_salida(self):                                       # [A5]
+        import unicodedata
+        import app
+        self.assertNotIn('<', app._nombre_seguro(self.MALO + '.stl', acentos=True))
+        nfd = unicodedata.normalize('NFD', 'Casa Díaz.STL')
+        self.assertEqual(app._nombre_seguro(nfd, acentos=True), 'Casa Díaz.stl')
+        self.assertEqual(len(app._nombre_seguro('a' * 250 + '.stl', acentos=True)), 84)
 
 
 if __name__ == '__main__':

@@ -45,6 +45,9 @@ MAX_MB = MAX // (1024 * 1024)   # el tope se escribe UNA vez: pantalla y error s
 MAX_CARAS = int(os.environ.get('DESPIECE_MAX_CARAS', '2000000'))
 TRABAJOS = max(1, int(os.environ.get('DESPIECE_TRABAJOS', '1')))
 HORAS_JOBS = float(os.environ.get('DESPIECE_HORAS', '48'))      # luego se borran
+# Las fallas NO van en JOBS (/tmp, se barre): aqui se quedan hasta revisarlas.
+# ponytail: sin barrido; con cientos de casos, borrar a mano los ya resueltos.
+CASOS = os.path.join(BASE, 'casos')
 TOPE_CACHE = int(float(os.environ.get('DESPIECE_CACHE_GB', '3')) * (1 << 30))
 from subida import leer_multipart, SubidaMala
 EXT_OK = {'.stl', '.obj', '.ply', '.glb', '.gltf', '.dae', '.off', '.3mf', '.skp',
@@ -157,13 +160,20 @@ _ELOCK = threading.Lock()
 _ULTIMO_BARRIDO = [0.0]
 
 
-def _nombre_seguro(nombre):
+def _nombre_seguro(nombre, acentos=False):
     """El nombre que puso el alumno, en ASCII y sin rutas: "Casa Díaz.DWG" queda
     "Casa Diaz.dwg". Los avisos de los lectores lo nombran asi en vez de
-    "modelo.dwg", y AutoCAD recibe una ruta sin acentos."""
+    "modelo.dwg", y AutoCAD recibe una ruta sin acentos.
+
+    acentos=True es para los archivos de SALIDA: conserva "Díaz" pero quita lo
+    que rompe una ruta o el HTML de la guia (< > " : ...) y corta a 80 letras;
+    con 250 el disco contestaba "File name too long" (auditoria, 14 sep 2026)."""
     base = os.path.basename((nombre or '').replace('\\', '/'))
-    base = unicodedata.normalize('NFKD', base).encode('ascii', 'ignore').decode('ascii')
-    base = re.sub(r'[^A-Za-z0-9 ._()+-]+', '_', base).strip(' .')
+    if acentos:
+        base = unicodedata.normalize('NFC', base)      # el Mac manda "i"+acento suelto
+    else:
+        base = unicodedata.normalize('NFKD', base).encode('ascii', 'ignore').decode('ascii')
+    base = re.sub(r'[^\w ._()+-]+', '_', base).strip(' .')
     raiz, ext = os.path.splitext(base)
     return (raiz[:80] or 'modelo') + ext.lower()
 
@@ -204,6 +214,31 @@ def _caras_stl_binario(ruta):
         return n if 84 + 50 * n == tam else None
     except OSError:
         return None
+
+
+def _guardar_caso(carpeta, job, campos, nombre, r, avisos, tb):
+    """Copia una falla a casos/<folio> con todo lo que hace falta para repetirla:
+    el modelo tal cual llego, lo que el alumno escogio en la pantalla, el error
+    (o el traceback si tronó) y el debug.log. Se repite con reproducir.py <folio>.
+    Nunca tumba la respuesta al alumno."""
+    try:
+        destino = os.path.join(CASOS, job)
+        entrada = os.path.join(carpeta, 'entrada')
+        if os.path.isdir(entrada):
+            shutil.copytree(entrada, os.path.join(destino, 'entrada'), dirs_exist_ok=True)
+        os.makedirs(destino, exist_ok=True)
+        log = os.path.join(carpeta, 'debug.log')
+        if os.path.exists(log):
+            shutil.copy(log, destino)
+        caso = {'folio': job, 'fecha': time.strftime('%Y-%m-%d %H:%M:%S'), 'nombre': nombre,
+                'campos': campos, 'error': r.get('error') if isinstance(r, dict) else None,
+                'avisos': avisos, 'traceback': tb}
+        with open(os.path.join(destino, 'caso.json'), 'w', encoding='utf-8') as f:
+            json.dump(caso, f, ensure_ascii=False, indent=1, default=str)
+        return True
+    except Exception:
+        traceback.print_exc()
+        return False
 
 
 def _limpiar_trabajo(carpeta, ok):
@@ -289,6 +324,10 @@ def _barrer_acad_huerfanos():
 
 class H(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
+    # Sin tope, un Content-Length mayor que el cuerpo dejaba el hilo esperando
+    # bytes para siempre. Es por cada lectura, no por el corte entero: una subida
+    # lenta pero viva no se corta (auditoria, 14 sep 2026).
+    timeout = 120
 
     def log_message(self, *a):
         sys.stderr.write('%s - %s\n' % (self.address_string(), a[0] % a[1:]))
@@ -317,7 +356,17 @@ class H(BaseHTTPRequestHandler):
         POST sigue abierto.
         """
         m = re.search(r'(?:^|&)job=([a-f0-9]{12})(?:&|$)', self._query())
-        return m.group(1) if m else uuid.uuid4().hex[:12]
+        # Solo si ese id no tiene carpeta todavia. Reusar uno viejo mezclaba en el
+        # zip las hojas del corte anterior con las nuevas, y dejaba a quien lo
+        # conociera escribir encima del trabajo de otro (auditoria, 14 sep 2026).
+        # mkdir y no exists(): dos peticiones con el mismo id no pasan las dos.
+        if m:
+            try:
+                os.mkdir(os.path.join(JOBS, m.group(1)))
+                return m.group(1)
+            except FileExistsError:
+                pass
+        return uuid.uuid4().hex[:12]
 
     def do_GET(self):
         dbg.set_request('debug=1' in self._query())
@@ -469,7 +518,7 @@ class H(BaseHTTPRequestHandler):
                 with dbg.etapa('parse'):
                     campos, archivo, mp, leido = leer_multipart(
                         self.rfile.read, n, boundary, destino, al_avance=avance)
-            except SubidaMala as e:
+            except (SubidaMala, TimeoutError) as e:
                 dbg.log('recibir.cortada', nivel='error', motivo=str(e))
                 return self._send(400, 'application/json', json.dumps(
                     {'error': 'la subida llego incompleta (%s). Vuelve a intentarlo.' % e,
@@ -502,7 +551,7 @@ class H(BaseHTTPRequestHandler):
             dbg.log('guardar.verif', bytes_pedidos=bytes_archivo,
                     bytes_en_disco=os.path.getsize(ruta_modelo))
             resultado = procesar(ruta_modelo, campos, carpeta, job,
-                                 os.path.splitext(os.path.basename(nombre_orig))[0])
+                                 os.path.splitext(_nombre_seguro(nombre_orig, acentos=True))[0])
             dbg.marcar('listo', job)
             if isinstance(resultado, dict) and job:
                 resultado.setdefault('job', job)
@@ -515,6 +564,8 @@ class H(BaseHTTPRequestHandler):
             err = {'error': '%s: %s' % (type(e).__name__, e)}
             if job:
                 err['job'] = job
+                if os.path.isdir(os.path.join(CASOS, job)):
+                    err['caso'] = job
             return self._send(500, 'application/json; charset=utf-8',
                               json.dumps(err, ensure_ascii=False))
 
@@ -617,13 +668,23 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
                 _ESPERA.remove(job)
     avisos = []
     r = None
+    tb = None
+    guardado = False
     try:
         r = _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos)
     except SystemExit as e:
         r = {'error': str(e)}
+    except Exception:
+        tb = traceback.format_exc()
+        raise
     finally:
         _TURNO.release()
-        _limpiar_trabajo(carpeta, isinstance(r, dict) and r.get('ok'))
+        ok = isinstance(r, dict) and r.get('ok')
+        if not ok:
+            guardado = _guardar_caso(carpeta, job, campos, nombre, r, avisos, tb)
+        _limpiar_trabajo(carpeta, ok)
+    if guardado and isinstance(r, dict):
+        r['caso'] = job
     if isinstance(r, dict) and r.get('error'):
         r['error'] = _sin_rutas(str(r['error']), carpeta)
         if avisos:
@@ -631,6 +692,22 @@ def procesar(ruta_modelo, campos, carpeta, job, nombre):
     elif isinstance(r, dict) and r.get('avisos'):
         r['avisos'] = [_sin_rutas(str(a), carpeta) for a in r['avisos']]
     return r
+
+
+def _numero(valor, que, minimo, maximo):
+    """Un numero de la pantalla dentro de su rango, o ValueError para el alumno.
+
+    Sin esto escala=0 o kerf=1e9 tronaban con 500 (hasta MemoryError), y
+    espesor=0 o kerf negativo salian "ok" con piezas que no ensamblan
+    (auditoria, 14 sep 2026)."""
+    try:
+        v = float(valor)
+    except (TypeError, ValueError):
+        v = float('nan')
+    if not minimo <= v <= maximo:          # nan e inf tambien caen aqui
+        raise ValueError('%s tiene que ser un numero entre %g y %g (llego "%s")'
+                         % (que, minimo, maximo, valor))
+    return v
 
 
 def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
@@ -645,8 +722,14 @@ def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
     import exportar
 
     unidades = campos.get('unidades', 'm')
-    espesor = float(campos.get('espesor', 3) or 3)
-    kerf = float(campos.get('kerf', 0.15) or 0)
+    try:
+        espesor = _numero(campos.get('espesor', 3) or 3, 'el espesor (mm)', 0.3, 50)
+        kerf = _numero(campos.get('kerf', 0.15) or 0, 'el kerf (mm)', 0, 5)
+        escala = _numero(campos.get('escala', 200) or 200, 'la escala', 1, 100000)
+        largo_cm = _numero(campos.get('largo_cm', 40) or 40, 'el largo (cm)', 1, 10000)
+    except ValueError as e:
+        dbg.log('procesar.error', nivel='error', motivo='parametro', detalle=str(e))
+        return {'error': str(e)}
     hoja_txt = (campos.get('hoja') or '500x700').lower()
     if hoja_txt == 'otra':
         hoja_txt = '%sx%s' % (campos.get('hoja_w') or 500, campos.get('hoja_h') or 700)
@@ -703,13 +786,10 @@ def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
 
     modo_escala = campos.get('modo_escala', 'escala')
     if modo_escala == 'largo':
-        largo_cm = float(campos.get('largo_cm', 40) or 40)
         a_mm = {'m': 1000.0, 'cm': 10.0, 'mm': 1.0}[unidades]
         largo_modelo_mm = max(m.extents[0], m.extents[1]) * a_mm
         escala = max(1.0, largo_modelo_mm / (largo_cm * 10.0))
         escala = round(escala / 5.0) * 5 or 5          # a multiplo de 5, mas legible
-    else:
-        escala = float(campos.get('escala', 200) or 200)
 
     vaciar = campos.get('vaciar', '1') not in ('0', 'false', '')
     cfg = Config(escala, espesor, kerf, (hw, hh), unidades_modelo=unidades, vaciar=vaciar)
@@ -962,7 +1042,7 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
             'zip': '/r/%s/%s' % (job, quote(os.path.basename(zip_path))),
             'svgs': svgs, 'iso': iso_a, 'iso_explotada': iso_e,
             'escala': int(cfg.escala), 'espesor': cfg.espesor_mm,
-            'grandes': grandes,
+            'grandes': grandes, 'unidades': cfg.unidades_modelo,
             'por_tipo': info['por_tipo'], 'n_uniones': info['n_uniones'],
             'n_recortes': info['n_recortes'], 'avisos': info.get('avisos', []),
             'descartados': len(info.get('descartados', [])),
@@ -1528,7 +1608,7 @@ async function correrEjemplo(boton){
     dbgResultado({job:d.job,raw:JSON.stringify(d,null,2),
       kv:{ejemplo:boton.dataset.id,'status HTTP':r.status,'tiempo total':r.ms+' ms',
           'export (servidor)':(d.segundos!=null?d.segundos+' s':'—')}});
-    if(d.error){fallo(d.error,d.avisos);}else{pintar(d);}
+    if(d.error){fallo(d.error,d.avisos,d.caso);}else{pintar(d);}
   }catch(e){fallo('No se pudo procesar: '+e.message);}
   finally{
     pararProgreso();
@@ -1584,7 +1664,7 @@ $('go').onclick=async()=>{
           'tamaño':(archivo.size/1048576).toFixed(2)+' MB',
           'status HTTP':r.status,'tiempo total':r.ms+' ms',
           'export (servidor)':(d.segundos!=null?d.segundos+' s':'—')}});
-    if(d.error){fallo(d.error,d.avisos);return;}
+    if(d.error){fallo(d.error,d.avisos,d.caso);return;}
     pintar(d);
   }catch(e){fallo('No se pudo procesar: '+e.message);}
   finally{pararProgreso();$('go').disabled=false;
@@ -1593,9 +1673,11 @@ $('go').onclick=async()=>{
 
 // Con el error van los avisos del lector (que unidad supuso, cual modelo del
 // ZIP uso): justo cuando algo falla es cuando mas sirven (cambio local, 12 sep).
-function fallo(msg,avisos){
+function fallo(msg,avisos,caso){
   $('err').innerHTML=esc(msg)+(avisos||[]).map(a=>
-    '<div class="aviso" style="margin-top:8px">'+esc(a)+'</div>').join('');
+    '<div class="aviso" style="margin-top:8px">'+esc(a)+'</div>').join('')+
+    (caso?'<div class="aviso" style="margin-top:8px">¿No sabes cómo arreglarlo? '+
+      'Manda este folio por WhatsApp y lo revisamos: <b>'+esc(caso)+'</b></div>':'');
   $('err').hidden=false;}
 function kpi(v,t){return '<div class="kpi"><b>'+v+'</b><span>'+t+'</span></div>';}
 // Cuanto tardo el servidor en generar el archivo (sin contar la subida).

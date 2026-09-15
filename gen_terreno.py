@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Genera un terreno de prueba (malla ABIERTA, como sale de un topografico real)."""
-import numpy as np, trimesh
+import os, numpy as np, trimesh
 
 nx, ny = 120, 90
 X, Y = np.meshgrid(np.linspace(0, 120, nx), np.linspace(0, 90, ny))   # metros
@@ -17,6 +17,7 @@ for j in range(ny - 1):
         a = j * nx + i; b = a + 1; c = a + nx; d = c + 1
         F += [[a, b, d], [a, d, c]]
 m = trimesh.Trimesh(vertices=V, faces=np.array(F), process=False)
+os.makedirs('out', exist_ok=True)
 m.export('out/terreno_prueba.stl')
 print('terreno: %.0f x %.0f m, desnivel %.1f m, %d caras, watertight=%s'
       % (X.max(), Y.max(), Z.max(), len(F), m.is_watertight))

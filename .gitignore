@@ -15,3 +15,5 @@ out/
 out_casa/
 out_solido/
 out_ifc/
+# modelos de alumnos que fallaron: son suyos y el repo es publico
+casos/

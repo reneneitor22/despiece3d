@@ -49,6 +49,8 @@ class TestPOST(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         os.environ['DESPIECE_DEBUG'] = '1'
+        import tempfile
+        cls.casos_reales, app.CASOS = app.CASOS, tempfile.mkdtemp()
         cls.srv = ThreadingHTTPServer(('127.0.0.1', 0), app.H)
         cls.puerto = cls.srv.server_address[1]
         cls.hilo = threading.Thread(target=cls.srv.serve_forever, daemon=True)
@@ -58,6 +60,7 @@ class TestPOST(unittest.TestCase):
     def tearDownClass(cls):
         cls.srv.shutdown()
         os.environ.pop('DESPIECE_DEBUG', None)
+        app.CASOS = cls.casos_reales
 
     def _post(self, ctype, cuerpo, ruta='/cortar'):
         c = http.client.HTTPConnection('127.0.0.1', self.puerto, timeout=60)
@@ -119,6 +122,32 @@ class TestPOST(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn('Revit 2024', d['error'])
         self.assertIn('Exportar', d['error'])
+
+    def test_falla_deja_caso_y_se_repite_con_el_folio(self):
+        import reproducir
+        campos = {'modo': 'curvas', 'unidades': 'm', 'modo_escala': 'escala',
+                  'escala': '10', 'espesor': '3', 'hoja': '10x10'}
+        ctype, cuerpo = multipart(campos, ('cubo.stl', CUBO_STL))
+        status, d = self._post(ctype, cuerpo)
+        self.assertIn('entre 50 y 5000', d['error'])
+        self.assertEqual(d['caso'], d['job'])          # el folio que ve el alumno
+        caso, r, _, _, ruta = reproducir.reproducir(d['caso'])
+        self.assertEqual(caso['campos']['hoja'], '10x10')
+        self.assertEqual(os.path.basename(ruta), 'cubo.stl')
+        self.assertEqual(r['error'], d['error'])
+
+    def test_si_truena_tambien_deja_caso_con_traceback(self):
+        original = app._procesar
+        app._procesar = lambda *a: 1 / 0
+        try:
+            status, d = self._post(*multipart({'modo': 'curvas'}, ('cubo.stl', CUBO_STL)))
+        finally:
+            app._procesar = original
+        self.assertEqual(status, 500)
+        base = os.path.join(app.CASOS, d['caso'])
+        with open(os.path.join(base, 'caso.json'), encoding='utf-8') as f:
+            self.assertIn('ZeroDivisionError', json.load(f)['traceback'])
+        self.assertEqual(os.listdir(os.path.join(base, 'entrada')), ['cubo.stl'])
 
 
 if __name__ == '__main__':
