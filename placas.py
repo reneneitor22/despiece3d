@@ -287,18 +287,30 @@ def _agrupar_por_plano(mesh, tol_n=TOL_NORMAL, tol_d=TOL_PLANO):
     # grupo), pero la comparacion contra todos los fundidos va en un solo
     # producto de numpy. Con el doble ciclo, un .skp de 100 mil caras eran 180
     # millones de np.dot y minuto y medio.
+    # Buscar solo entre los fundidos que YA estan a tiro por distancia (15 sep 2026).
+    # Comparar cada cubeta contra todos los fundidos era O(cubetas x fundidos): "Ya
+    # ahora si el final.skp" son 1.6 millones de cubetas contra 123 103 planos y este
+    # ciclo solo se llevaba 252 s de los 284 de la funcion. Si dos planos pasan la
+    # prueba |d1 - d2| < tol_d, sus casillas redondeadas son la misma o la de al lado:
+    # mirar tres casillas basta y no se pierde ningun empate. Se conserva el orden de
+    # insercion, porque el que se queda con la cubeta es el PRIMER fundido que empata.
     fundidos = []
     FN = np.empty((len(grupos), 3)); FD = np.empty(len(grupos))
+    por_d = {}
     for g in grupos:
-        k = len(fundidos)
-        if k:
-            ok = np.nonzero((FN[:k] @ g[0] > 1 - tol_n)
-                            & (np.abs(FD[:k] - g[1]) < tol_d))[0]
+        cd = int(round(g[1] / tol_d))
+        cerca = sorted(por_d.get(cd - 1, []) + por_d.get(cd, []) + por_d.get(cd + 1, []))
+        if cerca:
+            cand = np.array(cerca)
+            ok = np.nonzero((FN[cand] @ g[0] > 1 - tol_n)
+                            & (np.abs(FD[cand] - g[1]) < tol_d))[0]
             if len(ok):
-                f = fundidos[ok[0]]
+                f = fundidos[cand[ok[0]]]
                 f[2].extend(g[2]); f[3] += g[3]
                 continue
+        k = len(fundidos)
         FN[k] = g[0]; FD[k] = g[1]
+        por_d.setdefault(cd, []).append(k)
         fundidos.append(g)
     return fundidos
 

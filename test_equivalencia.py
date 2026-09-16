@@ -329,6 +329,93 @@ class FundirDaLoMismo(unittest.TestCase):
                              'semilla %d: cambiaron los grupos' % semilla)
             self.assertEqual(n, sum(len(g) - 1 for g in viejos))
 
+def _agrupar_por_plano_viejo(mesh, tol_n=placas.TOL_NORMAL, tol_d=placas.TOL_PLANO):
+    """El agrupado como estaba antes del indice por distancia (15 sep 2026): el
+    ciclo que funde cubetas vecinas recorria TODOS los fundidos."""
+    N = placas._canonizar(np.asarray(mesh.face_normals, dtype=float))
+    C = np.asarray(mesh.triangles_center, dtype=float)
+    D = np.einsum('ij,ij->i', N, C)
+    llaves = np.column_stack([np.round(N / tol_n), np.round(D / tol_d)]).astype(np.int64)
+    cubetas = {}
+    for i, k in enumerate(map(tuple, llaves)):
+        cubetas.setdefault(k, []).append(i)
+    grupos = []
+    for caras in cubetas.values():
+        idx = np.asarray(caras)
+        peso = mesh.area_faces[idx]
+        if peso.sum() <= 0:
+            continue
+        n = placas._canonizar((N[idx] * peso[:, None]).sum(axis=0)[None, :])[0]
+        norma = np.linalg.norm(n)
+        if norma < 1e-9:
+            continue
+        n /= norma
+        grupos.append([n, float(np.average(D[idx], weights=peso)), list(idx), float(peso.sum())])
+    grupos.sort(key=lambda g: -g[3])
+    fundidos = []
+    FN = np.empty((len(grupos), 3)); FD = np.empty(len(grupos))
+    for g in grupos:
+        k = len(fundidos)
+        if k:
+            ok = np.nonzero((FN[:k] @ g[0] > 1 - tol_n)
+                            & (np.abs(FD[:k] - g[1]) < tol_d))[0]
+            if len(ok):
+                f = fundidos[ok[0]]
+                f[2].extend(g[2]); f[3] += g[3]
+                continue
+        FN[k] = g[0]; FD[k] = g[1]
+        fundidos.append(g)
+    return fundidos
+
+
+def _modelo_de_parches(semilla):
+    """Muros y losas partidos en muchos triangulos, con planos a distancias que
+    caen justo en el borde del redondeo: ahi es donde se funden cubetas vecinas."""
+    rng = np.random.default_rng(semilla)
+    piezas = []
+    for k in range(6):
+        caja = trimesh.creation.box(extents=(2.0 + 0.1 * k, 1.5, 0.12))
+        caja.apply_translation((0.31 * k, 0.019 * k, 0.4 * k))    # 0.019 ~ el TOL_PLANO
+        if k % 2:
+            caja.apply_transform(trimesh.transformations.rotation_matrix(
+                0.0007 * k, (0, 0, 1)))                            # dentro de TOL_NORMAL
+        piezas.append(caja.subdivide().subdivide())
+    for k in range(3):
+        muro = trimesh.creation.box(extents=(0.1, 1.4, 1.0))
+        muro.apply_translation((0.5 + 0.7 * k, 0.0, 0.6))
+        piezas.append(muro.subdivide())
+    m = trimesh.util.concatenate(piezas)
+    m.apply_translation(rng.normal(scale=0.01, size=3))
+    return m
+
+
+class AgruparDaLoMismo(unittest.TestCase):
+    """El indice por distancia (15 sep 2026) no puede cambiar QUE cubetas se funden."""
+
+    def test_mismos_planos_que_el_camino_viejo(self):
+        for semilla in range(5):
+            mesh = placas._soldar(_modelo_de_parches(semilla))
+            viejos = _agrupar_por_plano_viejo(mesh)
+            nuevos = placas._agrupar_por_plano(mesh)
+            self.assertGreater(len(viejos), 8, 'semilla %d: la prueba perdio su punto' % semilla)
+            self.assertEqual(len(viejos), len(nuevos), 'semilla %d: cambio el numero de planos' % semilla)
+            for a, b in zip(viejos, nuevos):
+                np.testing.assert_array_equal(a[0], b[0], 'semilla %d: normal distinta' % semilla)
+                self.assertEqual(a[1], b[1], 'semilla %d: distancia distinta' % semilla)
+                self.assertEqual(list(a[2]), list(b[2]), 'semilla %d: otras caras' % semilla)
+                self.assertEqual(a[3], b[3], 'semilla %d: otro peso' % semilla)
+
+    def test_se_funden_cubetas_vecinas(self):
+        """Sin fusion no hay nada que vigilar: el modelo TIENE que traer cubetas
+        que el redondeo parte y el ciclo vuelve a juntar."""
+        mesh = placas._soldar(_modelo_de_parches(0))
+        N = placas._canonizar(np.asarray(mesh.face_normals, dtype=float))
+        D = np.einsum('ij,ij->i', N, np.asarray(mesh.triangles_center, dtype=float))
+        llaves = np.column_stack([np.round(N / placas.TOL_NORMAL),
+                                  np.round(D / placas.TOL_PLANO)]).astype(np.int64)
+        cubetas = len({tuple(k) for k in llaves})
+        self.assertGreater(cubetas, len(placas._agrupar_por_plano(mesh)))
+
 
 if __name__ == '__main__':
     unittest.main()
