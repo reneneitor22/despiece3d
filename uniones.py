@@ -9,6 +9,7 @@ sola, queda a escuadra y no depende del pegamento.
 import numpy as np
 from shapely.geometry import LineString, Polygon, Point, MultiPolygon
 from shapely.ops import unary_union
+import shapely.affinity as aff
 
 # una placa no puede quedar con menos de esta fraccion de su area por culpa
 # de las uniones: abajo de eso ya no es pieza, es encaje de bolillo
@@ -18,6 +19,8 @@ TOL_PERP = 0.90        # |nA . nB| menor a esto = se cruzan en angulo util
                        # (0.90 = desde 26 grados; el techo llega al muro a 28)
 MIN_CONTACTO = 0.15    # m de modelo: contacto mas corto no se dedea
 HOLGURA = 0.06         # mm de maqueta: juego de la ranura para que entre
+LABIO = 1.5            # espesores: lo que asoma del otro lado hasta aqui es ruido
+                       # del modelo; mas que eso, la placa sigue de largo (cruce)
 
 
 def _inv(F):
@@ -58,7 +61,13 @@ def _tramo(placa, q0, u, alcance):
     """Rango [t0,t1] del poligono dentro de una franja de ancho 2*alcance sobre la recta."""
     largo = max(placa['poly'].bounds[2] - placa['poly'].bounds[0],
                 placa['poly'].bounds[3] - placa['poly'].bounds[1]) * 4 + 10
-    recta = LineString([q0 - u * largo, q0 + u * largo])
+    # q0 es el punto de la recta mas cercano al ORIGEN del mundo, no a la placa:
+    # en un edificio lejos del origen el segmento no alcanzaba a la placa y el
+    # contacto no existia. Se centra en el pie del centroide sobre la recta.
+    # Los t se siguen midiendo desde q0: la otra placa usa el mismo punto.
+    cen = np.array(placa['poly'].centroid.coords[0])
+    qc = q0 + u * float(np.dot(cen - q0, u))
+    recta = LineString([qc - u * largo, qc + u * largo])
     reg = recta.buffer(max(alcance, 1e-6), cap_style=2).intersection(placa['poly'])
     if reg.is_empty or reg.area <= 1e-9:
         return None, False
@@ -67,8 +76,6 @@ def _tramo(placa, q0, u, alcance):
                 np.array([xs[0][0], xs[1][1]]), np.array([xs[1][0], xs[1][1]])]
     ts = [float(np.dot(c - q0, u)) for c in esquinas]
     cruza = recta.intersection(placa['poly']).length > 1e-6
-    # acotar al tramo realmente cubierto
-    tramo = reg.intersection(LineString([q0 - u * largo, q0 + u * largo]).buffer(alcance * 2, cap_style=2))
     return (min(ts), max(ts)), cruza
 
 
@@ -138,10 +145,21 @@ def _w_borde_geom(geom, q0, u, perp):
     return max(ws) if ws else None
 
 
-def _perp_hacia(placa, q, perp_base, otro_q):
-    """Perpendicular en el plano de la placa, apuntando hacia la otra placa."""
-    cen = np.array(placa['poly'].centroid.coords[0])
-    return perp_base if np.dot(q - cen, perp_base) >= 0 else -perp_base
+def _perp_hacia(placa, q, u, t0, t1, alcance):
+    """Perpendicular en el plano de la placa, apuntando de la placa hacia la recta.
+
+    Se decide EN EL TRAMO del contacto: el lado con mas material pegado a la
+    recta es el cuerpo. Con el centroide de la placa entera, una losa en L o un
+    muro de cinco pisos quedaba al reves y la union le cortaba el lado bueno.
+    """
+    perp = np.array([-u[1], u[0]])
+    g = placa['poly']
+    mas = g.intersection(_rect(q, u, perp, t0, t1, 0.0, alcance)).area
+    menos = g.intersection(_rect(q, u, perp, t0, t1, -alcance, 0.0)).area
+    if abs(mas - menos) > 1e-12:
+        return perp if menos > mas else -perp
+    cen = np.array(g.centroid.coords[0])
+    return perp if np.dot(q - cen, perp) >= 0 else -perp
 
 
 def _rect(q, u, perp, ta, tb, wa, wb):
@@ -163,13 +181,6 @@ def _tejer(placas, c, i_ranura, i_espiga, t, diente_obj, holgura_modelo):
         return None
     qe, ue = re_
     qr, ur = rr_
-    perp_e = _perp_hacia(pe, qe, np.array([-ue[1], ue[0]]), qr)
-    perp_r = _perp_hacia(pr, qr, np.array([-ur[1], ur[0]]), qe)
-
-    w_e = _w_borde(pe['poly'], qe, ue, perp_e, c['t0'], c['t1'])
-    w_r = _w_borde(pr['poly'], qr, ur, perp_r, c['t0'], c['t1'])
-    if w_e is None or w_r is None:
-        return None
 
     LEJOS = t * 40 + 1.0
     # a un angulo distinto de 90 grados hay que avanzar mas para salir del canto:
@@ -179,6 +190,27 @@ def _tejer(placas, c, i_ranura, i_espiga, t, diente_obj, holgura_modelo):
     # OJO: la placa no es una superficie, es una losa de espesor t. El material
     # que esta fuera del plano medio alcanza mas lejos, por eso el (1+cos).
     tt = t * (1.0 + cosang) / sen
+
+    alcance = tt / 2 + (LABIO + 1.5) * t
+    perp_e = _perp_hacia(pe, qe, ue, c['t0'], c['t1'], alcance)
+    perp_r = _perp_hacia(pr, qr, ur, c['t0'], c['t1'], alcance)
+
+    w_e = _w_borde(pe['poly'], qe, ue, perp_e, c['t0'], c['t1'])
+    w_r = _w_borde(pr['poly'], qr, ur, perp_r, c['t0'], c['t1'])
+    if w_e is None or w_r is None:
+        return None
+
+    def sigue(placa, q, u, perp):
+        """¿La placa continua del otro lado, mas alla de un labio? Entonces no
+        termina aqui: dientes o dedos le borrarian hasta LEJOS todo ese lado."""
+        g = placa['poly'].intersection(
+            _rect(q, u, perp, c['t0'], c['t1'], tt / 2 + LABIO * t, LEJOS))
+        return g.area > 0.25 * (c['t1'] - c['t0']) * t
+
+    # la espiga que atraviesa no es espiga: es un cruce y lo resuelve
+    # recortar_choques con una ranura pasante
+    if sigue(pe, qe, ue, perp_e):
+        return None
 
     n = max(3, min(11, int(round(c['largo'] / max(diente_obj, 1e-6)))))
     if n % 2 == 0:
@@ -222,6 +254,8 @@ def _tejer(placas, c, i_ranura, i_espiga, t, diente_obj, holgura_modelo):
         for r in ranuras:
             aportes.append(('sub', i_ranura, r))
     else:
+        if sigue(pr, qr, ur, perp_r):
+            return None
         modo = 'dedos'
         for k in range(n):
             ta, tb = c['t0'] + k * paso, c['t0'] + (k + 1) * paso
@@ -436,25 +470,230 @@ def _solo_poligonos(g, min_area=1e-9):
     return buenos[0] if len(buenos) == 1 else MultiPolygon(buenos)
 
 
+def _intervalos(poly, q, u, perp, wa, wb, min_area=1e-9):
+    """Tramos [t0, t1] de la recta donde la placa tiene material entre wa y wb
+    (distancia perpendicular a la recta, en su plano). Unidos y ordenados."""
+    b = poly.bounds
+    largo = (b[2] - b[0]) + (b[3] - b[1]) + 1.0
+    tc = float(np.dot(np.array(poly.centroid.coords[0]) - q, u))
+    reg = poly.intersection(_rect(q, u, perp, tc - largo, tc + largo, wa, wb))
+    ts = []
+    for g in (reg.geoms if hasattr(reg, 'geoms') else [reg]):
+        if g.geom_type != 'Polygon' or g.area <= min_area:
+            continue
+        xs = np.asarray(g.exterior.coords) - q
+        v = xs @ u
+        ts.append([float(v.min()), float(v.max())])
+    ts.sort()
+    unidos = []
+    for t0, t1 in ts:
+        if unidos and t0 <= unidos[-1][1]:
+            unidos[-1][1] = max(unidos[-1][1], t1)
+        else:
+            unidos.append([t0, t1])
+    return unidos
+
+
+def _cruce_intervalos(xa, xb, minimo):
+    out, i, j = [], 0, 0
+    while i < len(xa) and j < len(xb):
+        t0, t1 = max(xa[i][0], xb[j][0]), min(xa[i][1], xb[j][1])
+        if t1 - t0 > minimo:
+            out.append((t0, t1))
+        if xa[i][1] < xb[j][1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def _caja_mundo(p, holgura):
+    xy = np.asarray(p['poly'].exterior.coords) if not p['poly'].is_empty else np.zeros((0, 2))
+    if len(xy) == 0:
+        return None
+    L = np.hstack([xy, np.zeros((len(xy), 1)), np.ones((len(xy), 1))])
+    W = (p['a_mundo'] @ L.T).T[:, :3]
+    return W.min(axis=0) - holgura, W.max(axis=0) + holgura
+
+
+def _probar_corte(P, q, u, perp, tramos, d, t, max_perdida):
+    """Quitarle a P la franja [-d, d] en los tramos. Devuelve (nuevo, perdida,
+    termina) o (None, motivo, None) si la pieza no lo aguanta.
+
+    Lo que queda del otro lado de la franja solo se tira si es un LABIO (mas
+    delgado que LABIO espesores): el muro que asoma 4 mm arriba de la losa. Un
+    pedazo mas grande es media pieza y entonces el corte la parte en dos.
+    """
+    e = t * 1e-3
+    corte = unary_union([_rect(q, u, perp, t0 - e, t1 + e, -d, d) for t0, t1 in tramos])
+    resto = P['poly'].difference(corte)
+    partes = sorted([g for g in (resto.geoms if hasattr(resto, 'geoms') else [resto])
+                     if g.geom_type == 'Polygon' and g.area > 1e-12],
+                    key=lambda g: -g.area)
+    if not partes:
+        return None, 'desaparece', None
+    for g in partes[1:]:
+        s = (np.asarray(g.exterior.coords) - q) @ perp
+        if s.max() - s.min() > LABIO * t:
+            return None, 'se partiria en %d' % len(partes), None
+    nuevo = partes[0]
+    area = P['poly'].area
+    perdida = (area - nuevo.area) / area if area > 0 else 1.0
+    if perdida > max_perdida:
+        return None, 'perderia %.0f%%' % (100 * perdida), None
+    # tope acumulado: uniones y recortes juntos no dejan la pieza en menos de la
+    # mitad de lo que era (verificar_casa la da por destruida)
+    if nuevo.area < 0.5 * P.get('poly_original', P['poly']).area:
+        return None, 'quedaria en menos de la mitad', None
+    # ¿sigue de los dos lados de la franja? Entonces no termina ahi: la otra
+    # placa la atraviesa y lo que se le hizo es una ranura, no un recorte.
+    largo = sum(t1 - t0 for t0, t1 in tramos)
+    lados = [nuevo.intersection(unary_union(
+        [_rect(q, u, perp, t0, t1, a, b) for t0, t1 in tramos])).area
+        for a, b in ((d, d + 2 * t), (-d - 2 * t, -d))]
+    termina = min(lados) <= 0.25 * largo * 2 * t
+    return nuevo, perdida, termina
+
+
+def _en_plano_de(P, X):
+    """La huella de X vista en el plano local de P, y su altura sobre ese plano
+    como funcion afin de las coordenadas de P: z = g . (u, v) + h.
+    None si X no es casi paralela a P."""
+    M = np.linalg.inv(P['a_mundo']) @ X['a_mundo']
+    A2 = M[:2, :2]
+    if abs(float(np.linalg.det(A2))) < 1e-6:
+        return None
+    huella = aff.affine_transform(X['poly'], [M[0, 0], M[0, 1], M[1, 0], M[1, 1],
+                                               M[0, 3], M[1, 3]])
+    g = M[2, :2] @ np.linalg.inv(A2)
+    h = float(M[2, 3] - g @ M[:2, 3])
+    return huella, g, h
+
+
+def _traslape_paralelo(P, X, t):
+    """Donde las placas casi paralelas P y X ocupan el mismo volumen, en el plano de P."""
+    r = _en_plano_de(P, X)
+    if r is None:
+        return None
+    huella, g, h = r
+    try:
+        zona = P['poly'].intersection(huella)
+    except Exception:
+        return None
+    if zona.is_empty or zona.area <= 1e-9:
+        return None
+    lim = t * 0.98                       # dos caras que se besan no son choque
+    ng = float(np.hypot(g[0], g[1]))
+    if ng < 1e-9:
+        return zona if abs(h) < lim else None
+    # la altura crece a lo largo de n: la franja |z| < lim es una banda recta
+    n, e = g / ng, np.array([-g[1], g[0]]) / ng
+    b = zona.bounds
+    L = (b[2] - b[0]) + (b[3] - b[1]) + 1.0
+    ec = float(e @ np.array([(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]))
+    franja = _rect(np.zeros(2), e, n, ec - L, ec + L, (-lim - h) / ng, (lim - h) / ng)
+    zona = zona.intersection(franja)
+    return zona if not zona.is_empty and zona.area > 1e-9 else None
+
+
+def _resolver_paralelas(A, B, t, max_perdida):
+    """Dos placas casi paralelas encimadas: la losa inclinada 5 grados sobre la
+    plana, o el diente de un tramo de muro que crece dentro del tramo vecino del
+    mismo plano (SketchUp parte el muro por cuarto). Se le quita la zona comun a
+    la que menos pierde. Devuelve True si recorto, un aviso, o None si no chocan."""
+    opciones, motivos = [], []
+    for P, X in ((A, B), (B, A)):
+        zona = _traslape_paralelo(P, X, t)
+        if zona is None:
+            return None                 # si no chocan vistas desde una, no chocan
+        area = P['poly'].area
+        resto = P['poly'].difference(zona)
+        partes = sorted([g for g in (resto.geoms if hasattr(resto, 'geoms') else [resto])
+                         if g.geom_type == 'Polygon' and g.area > 1e-12],
+                        key=lambda g: -g.area)
+        if not partes:
+            motivos.append('%s desaparece' % P.get('id', '?'))
+            continue
+        if sum(g.area for g in partes[1:]) > 0.02 * area:
+            motivos.append('%s se partiria en %d' % (P.get('id', '?'), len(partes)))
+            continue
+        nuevo = partes[0]
+        perdida = (area - nuevo.area) / area if area > 0 else 1.0
+        if perdida > max_perdida:
+            motivos.append('%s perderia %.0f%%' % (P.get('id', '?'), 100 * perdida))
+            continue
+        if nuevo.area < 0.5 * P.get('poly_original', P['poly']).area:
+            motivos.append('%s quedaria en menos de la mitad' % P.get('id', '?'))
+            continue
+        opciones.append((perdida, P, nuevo))
+    if not opciones:
+        return ('%s y %s se enciman y no se pudo recortar ninguna (%s)'
+                % (A.get('id', '?'), B.get('id', '?'), '; '.join(motivos)))
+    _, P, nuevo = min(opciones, key=lambda x: x[0])
+    P['poly'] = nuevo
+    return True
+
+
+def _media_y_media(datos, tramos, d, t, max_perdida):
+    """Ranura hasta la mitad del tramo en una placa y desde la mitad en la otra.
+    Solo vale si ninguna queda con un hueco cerrado: una media ranura que no
+    llega a la orilla no se puede encajar."""
+    for primero in (0, 1):
+        X, Y = datos[primero], datos[1 - primero]
+        mitad_x = [(t0, (t0 + t1) / 2) for t0, t1 in tramos]
+        mitad_y = [((t0 + t1) / 2, t1) for t0, t1 in tramos]
+        hechos = []
+        for (P, q, u, perp, _), mitad in ((X, mitad_x), (Y, mitad_y)):
+            nuevo, _, _ = _probar_corte(P, q, u, perp, mitad, d, t, max_perdida)
+            if nuevo is None or len(nuevo.interiors) > len(P['poly'].interiors):
+                break
+            hechos.append((P, nuevo))
+        if len(hechos) == 2:
+            for P, nuevo in hechos:
+                P['poly'] = nuevo
+            return True
+    return False
+
+
 def recortar_choques(placas, contactos, t_placa_modelo, max_perdida=0.25):
     """Red de seguridad. Dos placas que se traslapan y NO alcanzaron a formar union
-    (tipico: el alero del techo contra el remate del muro) ocupan el mismo volumen y
-    la maqueta no cierra. Se recorta la que TERMINA ahi hasta la cara de la otra.
+    ocupan el mismo volumen y la maqueta no cierra.
+
+    Se mide el traslape de verdad: los tramos de la recta donde LAS DOS tienen
+    material dentro del espesor de la otra. Ahi se le quita la franja a una sola:
+      - si una TERMINA ahi (tope, esquina, remate sobre el muro), se recorta esa
+        hasta la cara de la otra; lo que asome del otro lado es un labio y se va;
+      - si las dos siguen de largo (el muro que ATRAVIESA la losa), la que no se
+        parte recibe una ranura pasante y la otra entra por ahi.
+    Antes, si las dos asomaban del otro lado aunque fuera un milimetro, se
+    tomaba por cruce y no se tocaba ninguna: era el 1.23% de la casa Engel.
 
     Devuelve (recortes_hechos, avisos)."""
     con_union = {tuple(sorted((c['ranura'], c['espiga']))) for c in contactos if c.get('modo')}
     hechos, avisos = 0, []
+    t = t_placa_modelo
+    cajas = [_caja_mundo(p, t) for p in placas]
 
     for i in range(len(placas)):
         for j in range(i + 1, len(placas)):
-            if (i, j) in con_union:
+            if (i, j) in con_union or cajas[i] is None or cajas[j] is None:
                 continue
+            if np.any(cajas[i][1] < cajas[j][0]) or np.any(cajas[j][1] < cajas[i][0]):
+                continue                          # ni se acercan
             A, B = placas[i], placas[j]
+            if A['poly'].is_empty or B['poly'].is_empty:
+                continue
             cos = abs(float(np.dot(A['normal'], B['normal'])))
-            if cos > 0.995:                       # paralelas: no se cruzan
+            if cos > 0.995:
+                # paralelas: no se cruzan, pero SI se pueden encimar
+                res = _resolver_paralelas(A, B, t, max_perdida)
+                if res is True:
+                    hechos += 1
+                elif res:
+                    avisos.append(res)
                 continue
             sen = max(float(np.sqrt(max(1.0 - cos * cos, 0.0))), 0.20)
-            d = (t_placa_modelo / 2.0) * (1.0 + cos) / sen
+            d = (t / 2.0) * (1.0 + cos) / sen
 
             lin = _linea_planos(A['centro'], A['normal'], B['centro'], B['normal'])
             if lin is None:
@@ -463,49 +702,36 @@ def recortar_choques(placas, contactos, t_placa_modelo, max_perdida=0.25):
             ra, rb = _recta_local(A, p0, dd), _recta_local(B, p0, dd)
             if ra is None or rb is None:
                 continue
-            ta, _ = _tramo(A, ra[0], ra[1], d)
-            tb, _ = _tramo(B, rb[0], rb[1], d)
-            if not ta or not tb:
-                continue
-            t0, t1 = max(ta[0], tb[0]), min(ta[1], tb[1])
-            if t1 - t0 <= 1e-6:
-                continue
-
-            # Regla por placa, no por par:
-            #   w <= -d      ya se queda antes de la otra -> nada
-            #   -d < w <= d  TERMINA dentro del carton de la otra -> se recorta
-            #   w > d        la atraviesa de lado a lado -> es la que manda, no se toca
             datos = []
             for P, (q, u) in ((A, ra), (B, rb)):
-                perp = _perp_hacia(P, q, np.array([-u[1], u[0]]), None)
-                w = _w_borde(P['poly'], q, u, perp, t0, t1)
-                datos.append((P, q, u, perp, w if w is not None else -1e9))
-            atraviesan = [x for x in datos if x[4] > d]
-            if len(atraviesan) == 2:
-                continue                           # se cruzan de verdad: no es un tope
-            # cede UNA sola: la que termina antes. Si ceden las dos queda un hueco
-            # y, peor, se puede partir una pieza a la mitad.
-            ceden = sorted([x for x in datos if -d < x[4] <= d], key=lambda x: x[4])[:1]
+                perp = np.array([-u[1], u[0]])
+                # un pelo adentro: dos caras que se besan no son choque
+                datos.append((P, q, u, perp,
+                              _intervalos(P['poly'], q, u, perp, -d + t * 0.02, d - t * 0.02)))
+            tramos = _cruce_intervalos(datos[0][4], datos[1][4], t * 0.02)
+            if not tramos:
+                continue
 
-            for P, q, u, perp, w in ceden:
-                if w <= -d + 1e-9:
+            opciones, motivos = [], []
+            for P, q, u, perp, _ in datos:
+                nuevo, perdida, termina = _probar_corte(P, q, u, perp, tramos, d, t,
+                                                        max_perdida)
+                if nuevo is None:
+                    motivos.append('%s %s' % (P.get('id', '?'), perdida))
                     continue
-                corte = _rect(q, u, perp, t0 - 1e-4, t1 + 1e-4, -d, t_placa_modelo * 40 + 1.0)
-                nuevo = P['poly'].difference(corte)
-                if nuevo.is_empty:
-                    avisos.append('%s desaparece al recortar contra %s' %
-                                  (P.get('id', '?'), (B if P is A else A).get('id', '?')))
+                # primero la que termina ahi; luego la que menos pierde
+                opciones.append(((not termina, perdida), P, nuevo))
+            if not opciones:
+                # Ninguna aguanta la ranura entera: se cruzan de orilla a orilla.
+                # Media ranura en cada una, cada media abierta hacia la orilla de
+                # su pieza (caja de huevos): se encajan una en la otra.
+                if _media_y_media(datos, tramos, d, t, max_perdida):
+                    hechos += 2
                     continue
-                if nuevo.geom_type == 'MultiPolygon':
-                    avisos.append('%s se partiria en %d contra %s: no se recorta' %
-                                  (P.get('id', '?'), len(nuevo.geoms),
-                                   (B if P is A else A).get('id', '?')))
-                    continue
-                if nuevo.area < P['poly'].area * (1 - max_perdida):
-                    avisos.append('%s perderia %.0f%% contra %s: no se recorta' %
-                                  (P.get('id', '?'), 100 * (1 - nuevo.area / P['poly'].area),
-                                   (B if P is A else A).get('id', '?')))
-                    continue
-                P['poly'] = nuevo
-                hechos += 1
+                avisos.append('%s y %s se enciman y no se pudo recortar ninguna (%s)'
+                              % (A.get('id', '?'), B.get('id', '?'), '; '.join(motivos)))
+                continue
+            _, P, nuevo = min(opciones, key=lambda x: x[0])
+            P['poly'] = nuevo
+            hechos += 1
     return hechos, avisos

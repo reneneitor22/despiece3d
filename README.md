@@ -384,6 +384,10 @@ los `gen_*.py`. Lo que trae y cómo se resuelve:
 | edificio de varios pisos | daba entrepisos y muros interiores que nadie quiere | `--solo-envolvente` deja la caja de afuera; `--piso N` corta una planta |
 | escaleras, muebles, columnas | se tiraban por no ser lámina | `--laminar-macizos` los rebana y apila |
 | esos cuerpos casi nunca vienen cerrados | rebanarlos daba cero capas | se les cose faldón y fondo antes |
+| **muro que atraviesa la losa** (muro de dos pisos, losa que entra a media fachada) | se le ponían dedos o espiga: la unión borraba todo lo que había "del otro lado" (5.5 m de fachada) y se cancelaba por dejarla bajo el 55%; el choque quedaba entero | si la placa **sigue de largo** más allá de 1.5 cartones no lleva dientes: la que no se parte recibe una **ranura pasante**; si las dos se parten, **media ranura en cada una** abierta a su orilla (caja de huevos) |
+| remate angosto sobre el muro, esquinas modeladas encimadas | el muro asomaba 4 mm arriba del remate y el remate 13 mm del otro lado: las dos "atravesaban" y no se recortaba ninguna | se mide el traslape de verdad; se recorta la que **termina** ahí y lo que asome del otro lado (un **labio** de ≤1.5 cartones) se tira |
+| edificio lejos del origen (coordenadas UTM, Main Street) | la búsqueda de contactos centraba su segmento en el punto más cercano al ORIGEN: una placa chica a 60 m no tocaba a nadie. Main Street salía con 23 uniones | el segmento se centra en la placa: 186 uniones |
+| muro partido por cuarto (SketchUp) y losas inclinadas pocos grados | el diente de un tramo crecía dentro del tramo vecino del mismo plano, y dos losas casi paralelas se saltaban por "paralelas" | las casi paralelas también se revisan: se proyecta una sobre la otra y se le quita la zona común a la que menos pierde |
 | modelo enorme (un distrito entero) | tope duro de 600 placas: no entregaba nada | se tira lo que no se corta a esa escala y se cortan las 400 más grandes, diciendo qué quedó fuera |
 
 La regla que ordena varias de esas: **lo que manda es el tamaño en la MAQUETA, no en el
@@ -396,13 +400,14 @@ modelo**. Una placa de 1 m² es una pieza de 10×10 mm a 1:100 y de 2×2 mm a 1:
    que todavía se ignora: el material de cada elemento (`IfcMaterialLayerSet`
    dice de qué está hecho el muro y en qué capas) y los `IfcSpace`, que darían
    los cuartos sin deducirlos.
-2. **El muro que ATRAVIESA la losa.** Es lo que sostiene la interferencia que queda
-   (Bauhaus completa 1.23%, envolvente 0.15%, casa de prueba 0.02%). Ya se descartó
-   que fuera la cancelación de uniones: midiendo un piso solo —29 placas, 31
-   contactos, apenas 4 canceladas y **cero** recortes rechazados— los choques siguen
-   ahí. Son pares donde el muro cruza la losa por en medio: unos salen en modo
-   `dedos`, que es para canto con canto y no para un cruce, y otros ni siquiera se
-   detectan como contacto. Hay que enseñarle a `uniones.py` el caso del cruce.
+2. ~~**El muro que ATRAVIESA la losa.**~~ Hecho el 16 sep 2026 (ver la tabla de
+   modelos bajados de internet). Interferencia medida con `verificar_casa.py`:
+   Bauhaus completa 1.23% → 0.04%, piso 10 0.96% → 0.01%, casa de Mérida
+   0.93% → 0.10%, Main Street 0.23% → 0.02%, sin placas destruidas. Y el material
+   que se comían las uniones: Bauhaus conservaba 75% del cartón, ahora 97%.
+   Queda por ver en la casa: los encuentros que ahora van a tope con pegamento en
+   vez de dientes (el piso 10 bajó de 53 a 36 uniones) y ~5 cruces por modelo que
+   ninguna regla resuelve y salen como aviso.
 3. **La planta arquitectónica.** Ya se corta por piso y por envolvente; falta sacar
    la planta dibujada, que es lo que además le piden al alumno para entregar.
 4. Cobro: preview gratis con marca de agua, pago para descargar.

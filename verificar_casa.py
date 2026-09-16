@@ -104,6 +104,7 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
     print('piezas: %d | voxeles ocupados: %d | en choque: %d (%.1f mm3, %.2f%% del material)'
           % (len(placas), ocupados, choques, choques * vol_voxel, 100 * frac))
 
+    pares = {}
     if choques:
         # Cada voxel en choque sabe quien lo ocupa: se recorre UNA vez por placa
         # y se anota. El par a par con conjuntos no aguanta 400 placas.
@@ -115,7 +116,6 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
                 continue
             for k in v[malos[v]].tolist():
                 duenios.setdefault(k, []).append(pid)
-        pares = {}
         for lista in duenios.values():
             for i in range(len(lista)):
                 for j in range(i + 1, len(lista)):
@@ -138,7 +138,8 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
           % ('PASA' if veredicto else 'NO PASA', 100 * frac, 100 * tolerancia,
              len(destruidas)))
     return {'ok': veredicto, 'frac': frac, 'choques': choques,
-            'ocupados': ocupados, 'destruidas': destruidas, 'placas': len(placas)}
+            'ocupados': ocupados, 'destruidas': destruidas, 'placas': len(placas),
+            'pares': pares, 'piezas': placas, 'contactos': cont, 't_mod': t_mod}
 
 
 if __name__ == '__main__':
