@@ -257,6 +257,14 @@ def _leer(ruta, avisar=True, hilos=4):
 
     cuerpos, tipos, planta_de, sin_geo = [], {}, {}, 0
     z_medidas = {}          # clave de planta -> z de cada cuerpo que le toco
+    # El iterador corre en `hilos` hilos y entrega por orden de TERMINO, no por
+    # orden de archivo: dos lecturas del mismo .ifc ponian 102 de los 311
+    # cuerpos del `cira` en otra posicion. Como el indice del cuerpo es la llave
+    # de `tipos` y `plantas`, eso cambiaba el despiece de una corrida a otra
+    # (191 placas contra 188) y las etiquetas L*/M* no le tocaban a la misma
+    # pieza. Se junta todo y se ordena por el id del elemento, que si es del
+    # archivo. 18 sep 2026.
+    crudos = []
     if it.initialize():
         while True:
             sh = it.get()
@@ -276,14 +284,16 @@ def _leer(ruta, avisar=True, hilos=4):
             except Exception:
                 cont = None
             clave = cont.id() if cont is not None else None
-            idx = len(cuerpos)
-            cuerpos.append(cuerpo)
-            if tipo:
-                tipos[idx] = tipo
-            planta_de[idx] = clave
-            z_medidas.setdefault(clave, []).append(float(cuerpo.bounds[0][2]))
+            crudos.append((sh.id, cuerpo, tipo, clave))
             if not it.next():
                 break
+
+    for idx, (_, cuerpo, tipo, clave) in enumerate(sorted(crudos, key=lambda r: r[0])):
+        cuerpos.append(cuerpo)
+        if tipo:
+            tipos[idx] = tipo
+        planta_de[idx] = clave
+        z_medidas.setdefault(clave, []).append(float(cuerpo.bounds[0][2]))
 
     if not cuerpos:
         raise SystemExit('el .ifc trae %d muros y losas pero ninguno con geometria '
@@ -339,11 +349,19 @@ def _leer(ruta, avisar=True, hilos=4):
 
 
 # ------------------------------------------------------------------- cache
+# Se sube cuando cambia lo que se guarda: los caches viejos se ignoran solos.
+CACHE_V = 2
+
+
 def _guardar_cache(destino, cuerpos, tipos, plantas, resumen):
     import numpy as np
     verts, caras, cortes, base = [], [], [], 0
     for c in cuerpos:
-        verts.append(np.asarray(c.vertices, dtype=np.float32))
+        # float64, no float32: en `cira` (255 m de lado) el redondeo movia los
+        # vertices 0.0076 mm, cambiaba el area de 268 de los 311 cuerpos y los
+        # que estaban al filo se caian por "seccion vacia" o "no es lamina". El
+        # mismo .ifc daba 191 placas en frio y 188 con el cache. 18 sep 2026.
+        verts.append(np.asarray(c.vertices, dtype=np.float64))
         caras.append(np.asarray(c.faces, dtype=np.int64) + base)
         cortes.append(len(c.faces))
         base += len(c.vertices)
@@ -353,6 +371,7 @@ def _guardar_cache(destino, cuerpos, tipos, plantas, resumen):
         vertices=np.vstack(verts), caras=np.vstack(caras),
         cortes=np.asarray(cortes, dtype=np.int64),
         meta=np.frombuffer(json.dumps({
+            'v': CACHE_V,
             'tipos': {str(k): v for k, v in tipos.items()},
             'plantas': {str(k): v for k, v in plantas.items()},
             'resumen': resumen}).encode('utf-8'), dtype=np.uint8))
@@ -363,6 +382,10 @@ def _cargar_cache(origen):
     import trimesh
     d = np.load(origen, allow_pickle=False)
     meta = json.loads(bytes(d['meta']).decode('utf-8'))
+    # Un cache de una version vieja no se repara: se ignora y el .ifc se vuelve
+    # a leer. Los de la v1 traen los vertices en float32 y dan otras placas.
+    if meta.get('v') != CACHE_V:
+        raise ValueError('cache v%s, se esperaba v%d' % (meta.get('v'), CACHE_V))
     V, F, cortes = d['vertices'].astype(np.float64), d['caras'], d['cortes']
     cuerpos, i = [], 0
     for n in cortes:

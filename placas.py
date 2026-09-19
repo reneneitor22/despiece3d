@@ -721,7 +721,13 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
     area_solida = sum(p['area'] for p in placas)
     if superficies and (len(placas) < 3 or area_solida < 0.15 * float(mesh.area)):
         sup, motivo = _placas_de_superficies(mesh, min_area_sup, t_modelo=t_modelo)
-        if len(sup) > len(placas):
+        # Gana el que reconstruya MAS MODELO, medido en area: lo que se corta es
+        # carton. Comparando CUANTAS son, "Ya ahora si el final.skp" (3.9 M
+        # componentes sueltos) se quedaba con 292 astillas de 225 m2 y tiraba las
+        # placas de superficie, que son las que traen las losas: la hoja salia con
+        # 195 piezas de 28 mm y sin el edificio, sin un solo aviso. 18 sep 2026.
+        area_sup = sum(p['area'] for p in sup)
+        if area_sup > area_solida:
             for i, p in enumerate(sup):
                 p['i'] = i
             nota = 'modelo de caras sin espesor: %d placas con grosor sintetico' % len(sup)
@@ -729,6 +735,13 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
                 nota += ' (%s)' % motivo
             descartados.append((-1, nota))
             placas = sup
+        else:
+            # Antes este camino era mudo: el plan B corria 25 minutos, perdia y
+            # nadie se enteraba. Si la salida sale pobre, aqui esta el porque.
+            descartados.append((-1, 'se probo el plan de caras sin espesor y reconstruye '
+                                    'menos modelo (%d placas, %.1f m2) que los solidos '
+                                    '(%d placas, %.1f m2): se quedan los solidos'
+                                    % (len(sup), area_sup, len(placas), area_solida)))
 
     # La regla vale para los DOS caminos: en un STL la losa viene como dos
     # solidos apilados y cada uno da su placa.

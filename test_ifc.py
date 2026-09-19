@@ -22,6 +22,8 @@ import struct
 import tempfile
 import unittest
 
+import numpy as np
+
 import ifc
 import rvt
 
@@ -154,14 +156,79 @@ class TestIFC(unittest.TestCase):
         self.assertEqual(n, 2)
 
     def test_el_cache_entrega_lo_mismo_que_leer_de_nuevo(self):
-        a = ifc.cargar_ifc(self.ruta, usar_cache=True, avisar=False)
-        b = ifc.cargar_ifc(self.ruta, usar_cache=True, avisar=False)   # ya cacheado
-        self.assertEqual(len(a.faces), len(b.faces))
+        """Comparar cuantas caras trae cada cuerpo no alcanza: el cache guardaba
+        los vertices en float32 y en `cira` (255 m de lado) eso los movia 0.0076
+        mm, cambiaba el area de 268 de 311 cuerpos y tiraba placas al filo. Aqui
+        se comparan las coordenadas."""
+        a = ifc.cargar_ifc(self.ruta, usar_cache=False, avisar=False)
+        ifc.cargar_ifc(self.ruta, usar_cache=True, avisar=False)       # deja el cache
+        b = ifc.cargar_ifc(self.ruta, usar_cache=True, avisar=False)   # lo lee
+        np.testing.assert_array_equal(a.vertices, b.vertices)
+        np.testing.assert_array_equal(a.faces, b.faces)
         sa, sb = a.metadata['semantica'], b.metadata['semantica']
         self.assertEqual(sa['tipos'], sb['tipos'])
         self.assertEqual(sa['plantas'], sb['plantas'])
-        self.assertEqual([len(c.faces) for c in sa['cuerpos']],
-                         [len(c.faces) for c in sb['cuerpos']])
+        for x, y in zip(sa['cuerpos'], sb['cuerpos']):
+            np.testing.assert_array_equal(x.vertices, y.vertices)
+            np.testing.assert_array_equal(x.faces, y.faces)
+
+    def test_el_cache_guarda_las_coordenadas_enteras(self):
+        """Prueba directa al cache, con un cuerpo LEJOS del origen: es donde se
+        ve. El fixture de este archivo mide 4 m y float32 lo representa exacto,
+        asi que ahi el bug no sale; en `cira`, de 255 m de lado, movia los
+        vertices 0.0076 mm y cambiaba el area de 268 de 311 cuerpos."""
+        import trimesh
+        v = np.array([[255.123456789, 198.987654321, 31.5],
+                      [255.223456789, 198.987654321, 31.5],
+                      [255.123456789, 199.087654321, 31.5],
+                      [255.123456789, 198.987654321, 31.6]], dtype=np.float64)
+        c = trimesh.Trimesh(vertices=v, faces=np.array([[0, 1, 2], [0, 1, 3],
+                                                        [0, 2, 3], [1, 2, 3]]),
+                            process=False)
+        destino = os.path.join(self.dir, 'c.npz')
+        ifc._guardar_cache(destino, [c], {0: 'muro'}, {0: 1},
+                           {'esquema': 'IFC4', 'n_elementos': 1, 'n_cuerpos': 1,
+                            'sin_geometria': 0, 'fuera': {}, 'plantas': ['p'],
+                            'por_clase': {}})
+        cuerpos, tipos, plantas, _ = ifc._cargar_cache(destino)
+        np.testing.assert_array_equal(np.sort(cuerpos[0].vertices, axis=0),
+                                      np.sort(v, axis=0))
+        self.assertEqual(cuerpos[0].area, c.area)
+        self.assertEqual(tipos, {0: 'muro'})
+        self.assertEqual(plantas, {0: 1})
+
+    def test_un_cache_de_version_vieja_se_ignora(self):
+        """Los .npz de la v1 traen float32: no se reparan, se vuelven a leer."""
+        import json as _json
+        import trimesh
+        c = trimesh.creation.box(extents=(1, 1, 1))
+        destino = os.path.join(self.dir, 'viejo.npz')
+        ifc._guardar_cache(destino, [c], {}, {0: 1},
+                           {'esquema': 'IFC4', 'n_elementos': 1, 'n_cuerpos': 1,
+                            'sin_geometria': 0, 'fuera': {}, 'plantas': ['p'],
+                            'por_clase': {}})
+        d = dict(np.load(destino, allow_pickle=False))
+        meta = _json.loads(bytes(d['meta']).decode('utf-8'))
+        meta['v'] = ifc.CACHE_V - 1
+        d['meta'] = np.frombuffer(_json.dumps(meta).encode('utf-8'), dtype=np.uint8)
+        np.savez_compressed(destino, **d)
+        with self.assertRaises(ValueError):
+            ifc._cargar_cache(destino)
+
+    def test_el_orden_de_los_cuerpos_no_depende_de_los_hilos(self):
+        """El iterador de ifcopenshell entrega por orden de TERMINO. Con 4 hilos,
+        dos lecturas de `cira` ponian 102 de sus 311 cuerpos en otra posicion, y
+        como el indice es la llave de `tipos` y `plantas`, el mismo archivo daba
+        191 placas una vez y 188 la otra. El fixture es chico para que falle
+        solo, pero el contrato es este: el orden sale del archivo, no del reloj."""
+        uno = ifc._leer(self.ruta, avisar=False, hilos=1)
+        cuatro = ifc._leer(self.ruta, avisar=False, hilos=4)
+        self.assertEqual(uno[1], cuatro[1])          # tipos
+        self.assertEqual(uno[2], cuatro[2])          # plantas
+        self.assertEqual(len(uno[0]), len(cuatro[0]))
+        for x, y in zip(uno[0], cuatro[0]):
+            np.testing.assert_array_equal(x.vertices, y.vertices)
+            np.testing.assert_array_equal(x.faces, y.faces)
 
     def test_un_ifc_sin_muros_ni_losas_lo_dice(self):
         vacio = os.path.join(self.dir, 'vacio.ifc')

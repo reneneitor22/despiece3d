@@ -595,5 +595,57 @@ class SkpPesado(Base):
         np.testing.assert_array_equal(centro, T[:3, 3])
 
 
+class PlanDeSuperficies(Base):
+    """18 sep 2026: "Ya ahora si el final.skp" (5.3 M caras, 3.9 M componentes
+    sueltos) salia con 195 piezas de 28 mm y sin el edificio. El repliegue de
+    caras sin espesor SI reconstruia las losas, pero se elegia por CUANTAS
+    placas daba cada camino y las astillas ganaban por numero."""
+
+    def _molde(self):
+        """Una losa de 10 x 10 m dibujada como dos triangulos sin espesor, mas
+        cinco astillas solidas. El plan de solidos solo ve las astillas."""
+        partes = []
+        v = np.array([[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]], float)
+        partes.append(trimesh.Trimesh(vertices=v, faces=np.array([[0, 1, 2], [0, 2, 3]]),
+                                      process=False))
+        for k in range(5):
+            c = trimesh.creation.box(extents=(0.5, 0.5, 0.02))
+            c.apply_translation((k * 1.5 + 1, 1, 2.0))
+            partes.append(c)
+        return trimesh.util.concatenate(partes)
+
+    def test_gana_el_que_reconstruye_mas_area(self):
+        import placas
+        m = self._molde()
+        solidas, _ = placas.extraer_placas(m, t_modelo=0.02, superficies=False)
+        sup, _ = placas._placas_de_superficies(m, placas.MIN_AREA_SUP, t_modelo=0.02)
+        # el molde es el caso dificil: las astillas son MAS pero valen MENOS
+        self.assertGreater(len(solidas), len(sup))
+        self.assertGreater(sum(p['area'] for p in sup), sum(p['area'] for p in solidas))
+
+        placas_ok, _ = placas.extraer_placas(m, t_modelo=0.02)
+        self.assertAlmostEqual(max(p['area'] for p in placas_ok), 100.0, places=1)
+
+    def test_si_pierde_lo_dice(self):
+        """Antes el plan B corria, perdia y no dejaba rastro: si la salida sale
+        pobre tiene que verse por que."""
+        import placas
+        m = self._molde()
+        with mock.patch.object(placas, '_placas_de_superficies',
+                               return_value=([], 'sin parches')):
+            _, descartados = placas.extraer_placas(m, t_modelo=0.02)
+        notas = [d for i, d in descartados if i == -1]
+        self.assertTrue(any('reconstruye menos modelo' in n for n in notas), notas)
+
+    def test_elegir_por_cuenta_se_queda_con_las_astillas(self):
+        """Control negativo: con la regla vieja el molde pierde la losa."""
+        import placas
+        m = self._molde()
+        solidas, _ = placas.extraer_placas(m, t_modelo=0.02, superficies=False)
+        sup, _ = placas._placas_de_superficies(m, placas.MIN_AREA_SUP, t_modelo=0.02)
+        elegidas = sup if len(sup) > len(solidas) else solidas
+        self.assertLess(max(p['area'] for p in elegidas), 1.0)
+
+
 if __name__ == '__main__':
     unittest.main()
