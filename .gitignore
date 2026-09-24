@@ -17,3 +17,6 @@ out_solido/
 out_ifc/
 # modelos de alumnos que fallaron: son suyos y el repo es publico
 casos/
+# credenciales de Instagram: el repo es PUBLICO
+.env
+.DS_Store

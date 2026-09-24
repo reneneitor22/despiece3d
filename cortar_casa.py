@@ -64,7 +64,7 @@ for i, col in enumerate(hojas):
     dxf = os.path.join(a.salida, '%s_hoja%02d.dxf' % (nombre, i + 1))
     exportar.hoja_a_dxf(col, cfg, dxf, tit); dxfs.append(dxf)
     svg = exportar.hoja_a_svg(col, cfg, tit); svgs.append(svg)
-    open(os.path.join(a.salida, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w').write(svg)
+    open(os.path.join(a.salida, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w', encoding='utf-8').write(svg)
     area += sum(c['geo'].area for c in col)
 
 exportar.hojas_a_pdf(hojas, cfg, os.path.join(a.salida, '%s.pdf' % nombre),
@@ -83,7 +83,7 @@ iso_a = vista(info['placas'])
 iso_e = vista(info['placas'], explotar=1.4 * (cfg.espesor_mm / cfg.a_mm) * 7)
 html = exportar.guia_estructural(hojas, piezas, cfg, svgs, nombre, grandes, stats, info,
                                  iso_a, iso_e)
-open(os.path.join(a.salida, '%s_guia.html' % nombre), 'w').write(html)
+open(os.path.join(a.salida, '%s_guia.html' % nombre), 'w', encoding='utf-8').write(html)
 
 print('placas %d %s | uniones %d | recortes %d | hojas %d | %.1fs'
       % (info['n_placas'], info['por_tipo'], info['n_uniones'], info['n_recortes'],

@@ -39,7 +39,7 @@ def correr(ruta, cfg, salida, nombre=None):
         dxfs.append(dxf)
         svg = exportar.hoja_a_svg(colocadas, cfg, titulo)
         svgs.append(svg)
-        open(os.path.join(salida, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w').write(svg)
+        open(os.path.join(salida, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w', encoding='utf-8').write(svg)
         for col in colocadas:
             area_usada += col['geo'].area
 
@@ -64,7 +64,7 @@ def correr(ruta, cfg, salida, nombre=None):
     html = exportar.guia_html(hojas, sorted(piezas, key=lambda p: p['id']), cfg, svgs,
                               nombre, grandes, stats)
     ruta_html = os.path.join(salida, '%s_guia.html' % nombre)
-    open(ruta_html, 'w').write(html)
+    open(ruta_html, 'w', encoding='utf-8').write(html)
 
     print('capas %d | piezas %d | hojas %d | alto maqueta %.0f mm | aprovechamiento %.0f%%'
           % (len(capas), len(piezas), len(hojas), stats['alto_mm'], stats['aprov']))

@@ -1002,6 +1002,13 @@ def _huella_en_planta(placa, z0, z1, t_min):
     return salida
 
 
+def _esquinas(g):
+    """Las 4 esquinas de la caja 2D de g, listas para multiplicar por a_mundo."""
+    x0, y0, x1, y1 = g.bounds
+    return np.array([[x0, y0, 0.0, 1.0], [x1, y0, 0.0, 1.0],
+                     [x0, y1, 0.0, 1.0], [x1, y1, 0.0, 1.0]])
+
+
 def huellas_en_losas(placas, t_min, junta_m=0.60, alto_m=0.15):
     """Graba en cada losa la PLANTA de los muros que se paran encima.
 
@@ -1033,6 +1040,27 @@ def huellas_en_losas(placas, t_min, junta_m=0.60, alto_m=0.15):
     if z_tope is None:
         return 0
 
+    # Prefiltro (24 sep 2026): cada losa se cruzaba con TODOS los muros del
+    # edificio en shapely. La huella de un muro es un tramo de su traza engordado
+    # t/2, asi que cae dentro de su caja orientada en planta (a lo largo x a lo
+    # ancho de la traza) mas t/2, y solo existe si el muro llega a la franja de
+    # alturas. Un muro que no toca eso no aporta nada: se salta sin cambiar el dibujo.
+    n_m = len(muros)
+    m_lo, m_hi = np.full((n_m, 3), np.inf), np.full((n_m, 3), -np.inf)
+    for k, w in enumerate(muros):
+        F = w['a_mundo']
+        ln = float(np.hypot(F[0, 2], F[1, 2]))
+        if w['poly'].is_empty or ln < 1e-9:
+            continue                               # sin huella: nunca pasa
+        P = (F @ _esquinas(w['poly']).T).T[:, :3]  # la caja 2D, con todas sus partes
+        d = np.array([-F[1, 2], F[0, 2]]) / ln
+        e = np.array([F[0, 2], F[1, 2]]) / ln
+        a, b = P[:, :2] @ d, P[:, :2] @ e
+        esq = np.array([ai * d + bi * e for ai in (a.min(), a.max()) for bi in (b.min(), b.max())])
+        h = max(float(w.get('espesor_real') or 0.0), t_min) / 2.0 + 1e-6
+        m_lo[k] = [esq[:, 0].min() - h, esq[:, 1].min() - h, P[:, 2].min() - 1e-6]
+        m_hi[k] = [esq[:, 0].max() + h, esq[:, 1].max() + h, P[:, 2].max() + 1e-6]
+
     marcadas = 0
     for losa in losas:
         z = float(losa['z_min'])
@@ -1045,9 +1073,14 @@ def huellas_en_losas(placas, t_min, junta_m=0.60, alto_m=0.15):
         inv = _desde_mundo_xy(losa)
         if inv is None:
             continue
+        L = (losa['a_mundo'] @ _esquinas(losa['poly']).T).T
+        toca = ((m_lo[:, 2] <= zb) & (m_hi[:, 2] >= za)
+                & (m_lo[:, 0] <= L[:, 0].max()) & (m_hi[:, 0] >= L[:, 0].min())
+                & (m_lo[:, 1] <= L[:, 1].max()) & (m_hi[:, 1] >= L[:, 1].min()))
 
         dibujo = []
-        for w in muros:
+        for k in np.nonzero(toca)[0]:
+            w = muros[k]
             for h in _huella_en_planta(w, za, zb, t_min):
                 try:
                     g = aff.affine_transform(h, inv).intersection(losa['poly'])

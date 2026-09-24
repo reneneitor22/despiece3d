@@ -417,5 +417,201 @@ class AgruparDaLoMismo(unittest.TestCase):
         self.assertGreater(cubetas, len(placas._agrupar_por_plano(mesh)))
 
 
+def _contactos_viejo(pl, t):
+    """detectar_contactos antes del prefiltro por cajas (24 sep 2026): TODOS los pares."""
+    import uniones as U
+    cont = []
+    for i in range(len(pl)):
+        for j in range(len(pl)):
+            if i == j:
+                continue
+            a, b = pl[i], pl[j]
+            if abs(float(np.dot(a['normal'], b['normal']))) > U.TOL_PERP:
+                continue
+            lin = U._linea_planos(a['centro'], a['normal'], b['centro'], b['normal'])
+            if lin is None:
+                continue
+            p0, d = lin
+            ra_, rb_ = U._recta_local(a, p0, d), U._recta_local(b, p0, d)
+            if ra_ is None or rb_ is None:
+                continue
+            ta, cruza_a = U._tramo(a, ra_[0], ra_[1], max(b['espesor_real'], t) / 2.0 + 1e-4)
+            tb, cruza_b = U._tramo(b, rb_[0], rb_[1], max(a['espesor_real'], t) / 2.0 + 1e-4)
+            if not ta or not tb:
+                continue
+            t0, t1 = max(ta[0], tb[0]), min(ta[1], tb[1])
+            if t1 - t0 < U.MIN_CONTACTO or (cruza_b and not cruza_a):
+                continue
+            cont.append({'ranura': i, 'espiga': j, 'p0': p0, 'd': d,
+                         't0': float(t0), 't1': float(t1), 'largo': float(t1 - t0)})
+    vistos, limpio = set(), []
+    for c in sorted(cont, key=lambda c: -c['largo']):
+        k = tuple(sorted((c['ranura'], c['espiga'])))
+        if k not in vistos:
+            vistos.add(k)
+            limpio.append(c)
+    return limpio
+
+
+def _barrio(semilla):
+    """Casas de dos pisos lejos del origen (coordenadas tipo UTM), con un muro en
+    diagonal y separaciones al filo de un carton: ahi es donde el prefiltro podria
+    tirar un contacto que si existe."""
+    rng = np.random.default_rng(semilla)
+    partes = []
+
+    def caja(x0, y0, z0, x1, y1, z1, giro=0.0):
+        b = trimesh.creation.box(extents=(x1 - x0, y1 - y0, z1 - z0))
+        if giro:
+            b.apply_transform(trimesh.transformations.rotation_matrix(giro, (0, 0, 1)))
+        b.apply_translation(((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2))
+        partes.append(b)
+    for k in range(4):
+        ox, oy = 512000.0 + 10.5 * k + rng.uniform(0, 0.03), 2100000.0 + rng.uniform(0, 3)
+        w, d, e = 8 + rng.uniform(0, 1), 6 + rng.uniform(0, 1), 0.15
+        for z in (0.0, 3.0):
+            caja(ox, oy, z, ox + w, oy + d, z + 0.2)
+            caja(ox, oy, z + 0.2, ox + w, oy + e, z + 3.0)
+            caja(ox, oy + d - e, z + 0.2, ox + w, oy + d, z + 3.0)
+            caja(ox, oy + e, z + 0.2, ox + e, oy + d - e, z + 3.0)
+            caja(ox + w - e, oy + e, z + 0.2, ox + w, oy + d - e, z + 3.0)
+        caja(ox + 3, oy + 2, 0.2, ox + 5.5, oy + 2 + e, 3.0, giro=0.5)
+    return trimesh.util.concatenate(partes)
+
+
+class ContactosDaLoMismo(unittest.TestCase):
+    """El prefiltro por cajas de detectar_contactos no puede cambiar NINGUN contacto."""
+
+    def test_mismos_contactos_que_el_camino_viejo(self):
+        import uniones
+        for semilla in range(3):
+            pl, _ = placas.extraer_placas(_barrio(semilla), t_modelo=0.02)
+            placas.nombrar(pl)
+            viejos = _contactos_viejo(pl, 0.02)
+            nuevos = uniones.detectar_contactos(pl, 0.02)
+            self.assertGreater(len(viejos), 60, 'semilla %d: la prueba perdio su punto' % semilla)
+            self.assertEqual(len(viejos), len(nuevos), 'semilla %d' % semilla)
+            for a, b in zip(viejos, nuevos):
+                self.assertEqual(a.keys(), b.keys())
+                for k in a:
+                    np.testing.assert_array_equal(a[k], b[k], 'semilla %d: %s' % (semilla, k))
+
+
+class AcomodoPrimerLibre(unittest.TestCase):
+    """acomodar tomaba el lugar con nonzero + lexsort y ahora con argmax: tiene que
+    ser la MISMA celda, el mas abajo y luego el mas a la izquierda."""
+
+    def test_argmax_es_el_primero_de_lexsort(self):
+        rng = np.random.default_rng(0)
+        for _ in range(300):
+            libre = rng.random((int(rng.integers(1, 40)), int(rng.integers(1, 40)))) < rng.random() * 0.1
+            if not libre.any():
+                continue
+            filas, cols = np.nonzero(libre)
+            j = int(np.lexsort((cols, filas))[0])
+            self.assertEqual((int(filas[j]), int(cols[j])), divmod(int(libre.argmax()), libre.shape[1]))
+
+    def test_fft_circular_da_lo_mismo_que_contar(self):
+        """La FFT circular del tamano de la hoja tiene que decir libre/ocupado igual
+        que contar celda por celda, hasta con la mascara del tamano de la hoja."""
+        from scipy import fft as sfft
+        from scipy.signal import correlate
+        rng = np.random.default_rng(1)
+        for _ in range(60):
+            nh, nw = int(rng.integers(5, 120)), int(rng.integers(5, 90))
+            occ = np.zeros((nh, nw), bool)
+            for _ in range(int(rng.integers(0, 12))):
+                y, x = int(rng.integers(0, nh)), int(rng.integers(0, nw))
+                occ[y:y + int(rng.integers(1, 40)), x:x + int(rng.integers(1, 40))] = True
+            m = rng.random((int(rng.integers(1, nh + 1)), int(rng.integers(1, nw + 1)))) < 0.7
+            m[0, 0] = True
+            P = (sfft.next_fast_len(nh, True), sfft.next_fast_len(nw, True))
+            encima = sfft.irfft2(sfft.rfft2(occ.astype(np.float32), s=P)
+                                 * np.conj(sfft.rfft2(m.astype(np.float32), s=P)), s=P)
+            libre = encima[:nh - m.shape[0] + 1, :nw - m.shape[1] + 1] < 0.5
+            exacto = correlate(occ.astype(np.int64), m.astype(np.int64), mode='valid',
+                               method='direct') == 0
+            np.testing.assert_array_equal(libre, exacto)
+
+    def test_acomodo_no_encima_piezas(self):
+        """De punta a punta: ninguna pieza pisa a otra ni se sale de la hoja."""
+        import despiece
+        from shapely.geometry import Polygon
+        rng = np.random.default_rng(2)
+        piezas = []
+        for k in range(60):
+            n = int(rng.integers(3, 9))
+            ang = np.sort(rng.uniform(0, 2 * np.pi, n))
+            r = rng.uniform(10, 120) * rng.uniform(0.5, 1.0, n)
+            piezas.append({'id': 'P%d' % k, 'guia': None, 'poly': Polygon(
+                np.column_stack((r * np.cos(ang), r * np.sin(ang)))).convex_hull})
+        cfg = despiece.Config(100, 2.0, 0.0, (500, 700))
+        hojas, grandes = despiece.acomodar(piezas, cfg, rotaciones=despiece.ROTACIONES_ORTO)
+        self.assertFalse(grandes)
+        self.assertGreater(len(hojas), 1, 'la prueba tiene que llenar mas de una hoja')
+        for h in hojas:
+            for c in h:
+                x0, y0, x1, y1 = c['geo'].bounds
+                self.assertTrue(x0 >= cfg.margen_mm - 1e-6 and y0 >= cfg.margen_mm - 1e-6)
+                self.assertTrue(x1 <= 500 - cfg.margen_mm + 1e-6 and y1 <= 700 - cfg.margen_mm + 1e-6)
+            for i, a in enumerate(h):
+                for b in h[i + 1:]:
+                    self.assertGreaterEqual(a['geo'].distance(b['geo']), cfg.sep_mm - 1e-6,
+                                            (a['pieza']['id'], b['pieza']['id']))
+
+
+def _huellas_todos_los_muros(pl, t_min, junta_m=0.60, alto_m=0.15):
+    """La planta grabada SIN prefiltro: cada losa contra cada muro (24 sep 2026)."""
+    from shapely.ops import unary_union
+    import shapely.affinity as aff
+    losas = [p for p in pl if p['tipo'] == 'losa']
+    muros = [p for p in pl if p['tipo'] in ('muro', 'techo')]
+    niveles = placas.niveles_de_piso(pl, junta_m)
+    z_tope = max(float(np.max((p['a_mundo'] @ np.array(
+        [[c[0], c[1], 0.0, 1.0] for c in placas._borde_exterior(p['poly'])]).T)[2])) for p in pl)
+    salida = {}
+    for losa in losas:
+        z = float(losa['z_min'])
+        i = min(range(len(niveles)), key=lambda k: abs(niveles[k] - z))
+        z_sig = niveles[i + 1] if i + 1 < len(niveles) else z_tope
+        za = z + float(losa.get('espesor_real') or 0.0) / 2.0 + 0.01
+        zb = min(za + alto_m, z_sig - 0.02)
+        if zb <= za:
+            zb = za + 0.01
+        inv = placas._desde_mundo_xy(losa)
+        dibujo = [g for w in muros for h in placas._huella_en_planta(w, za, zb, t_min)
+                  for g in [aff.affine_transform(h, inv).intersection(losa['poly'])] if not g.is_empty]
+        if dibujo:
+            salida[id(losa)] = unary_union(dibujo)
+    return salida
+
+
+class HuellasDaLoMismo(unittest.TestCase):
+    """El prefiltro de huellas_en_losas no puede quitar ni mover ninguna linea."""
+
+    def test_misma_planta_que_contra_todos_los_muros(self):
+        for semilla in range(3):
+            mesh = _barrio(semilla)
+            # un techo a dos aguas: placas inclinadas, cuya traza en planta NO es una linea
+            techo = trimesh.creation.box(extents=(6.0, 0.12, 4.0))
+            techo.apply_transform(trimesh.transformations.rotation_matrix(0.6, (1, 0, 0)))
+            techo.apply_translation((512003.0, 2100003.0, 7.0))
+            # un muro montado en la orilla de la losa: su plano medio cae 2.5 cm FUERA
+            # y solo la toca por su medio espesor. Es el caso que vigila el margen t/2.
+            orilla = trimesh.creation.box(extents=(3.0, 0.15, 2.8))
+            losa0 = min(p.bounds[0][1] for p in [mesh])
+            orilla.apply_translation((512002.0, losa0 - 0.025, 1.6))
+            pl, _ = placas.extraer_placas(trimesh.util.concatenate([mesh, techo, orilla]),
+                                          t_modelo=0.02)
+            self.assertTrue(any(p['tipo'] == 'techo' for p in pl), 'semilla %d: sin techo' % semilla)
+            ref = _huellas_todos_los_muros(pl, 0.02)
+            self.assertGreater(len(ref), 4, 'semilla %d: la prueba perdio su punto' % semilla)
+            n = placas.huellas_en_losas(pl, 0.02)
+            self.assertEqual(n, len(ref))
+            for p in pl:
+                if id(p) in ref:
+                    self.assertTrue(p['marcas'].equals(ref[id(p)]), 'semilla %d' % semilla)
+
+
 if __name__ == '__main__':
     unittest.main()

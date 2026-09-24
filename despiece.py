@@ -683,7 +683,7 @@ def armar_piezas(capas, vaciar=True, ceja_mm=7.0, min_hueco_mm2=900.0):
 # envolvente: las curvas de nivel son blobs y la caja desperdicia ~40%.
 import shapely.affinity as aff
 from PIL import Image, ImageDraw
-from scipy.signal import fftconvolve
+from scipy import fft as sfft
 from scipy.ndimage import binary_dilation
 
 ROTACIONES = (0, 45, 90, 135, 180, 225, 270, 315)
@@ -852,16 +852,20 @@ def _acomodar_por_grupo(piezas, cfg, agrupar, res, rotaciones):
     for b in bloques:
         bw, bh = b['w'], b['h'] + ROTULO_MM
         destino = None
-        for k, st in enumerate(estantes):
+        # Solo en la ULTIMA hoja. Volver a buscar lugar en una anterior metia la
+        # planta 12 en la hoja 1 y la 2 en la hoja 2 (Casa Engel): justo lo que
+        # dice el comentario de arriba que no. En orden cuesta una hoja mas en
+        # Engel (4 -> 5) y en Main Street (6 -> 7); Merida queda igual. 24 sep 2026.
+        if estantes:
+            k, st = len(estantes) - 1, estantes[-1]
             if bw <= W - st['x'] and bh <= st['alto']:
                 destino = (k, st['x'], st['y'])
                 st['x'] += bw + SEP_ZONA_MM
-                break
-            y = st['y'] + st['alto'] + SEP_ZONA_MM
-            if bw <= W and y + bh <= H:
-                st['y'], st['alto'], st['x'] = y, bh, bw + SEP_ZONA_MM
-                destino = (k, 0.0, y)
-                break
+            else:
+                y = st['y'] + st['alto'] + SEP_ZONA_MM
+                if bw <= W and y + bh <= H:
+                    st['y'], st['alto'], st['x'] = y, bh, bw + SEP_ZONA_MM
+                    destino = (k, 0.0, y)
         if destino is None:
             hojas.append([])
             estantes.append({'y': 0.0, 'alto': bh, 'x': bw + SEP_ZONA_MM})
@@ -900,9 +904,16 @@ def acomodar(piezas, cfg, res=2.0, rotaciones=None, agrupar=None):
     W = cfg.hoja[0] - 2 * cfg.margen_mm
     H = cfg.hoja[1] - 2 * cfg.margen_mm
     nw, nh = int(W / res), int(H / res)
+    # Donde cabe la pieza es la correlacion de su mascara con lo ocupado. Se saca
+    # con FFT CIRCULAR del tamano de la hoja: en la zona valida (mascara entera
+    # dentro de la hoja) la vuelta no alcanza a sumar nada, y asi el espectro de
+    # cada hoja se calcula una vez y se reusa hasta que se le pone una pieza, y el
+    # de cada rotacion una vez para todas las hojas. Antes fftconvolve rehacia las
+    # tres FFT por pieza x hoja x rotacion (Vaticano, 45 hojas: 54 s). 24 sep 2026.
+    P = (sfft.next_fast_len(nh, True), sfft.next_fast_len(nw, True))
 
     orden = sorted(range(len(piezas)), key=lambda k: -piezas[k]['poly'].area)
-    hojas, ocupacion = [], []
+    hojas, ocupacion, espectro = [], [], []
     grandes = []
 
     for k in orden:
@@ -914,7 +925,8 @@ def acomodar(piezas, cfg, res=2.0, rotaciones=None, agrupar=None):
             buf = g.buffer(cfg.sep_mm / 2.0 + res * 0.5, join_style=2)
             m, bx, by = _mascara(buf, res)
             if m.shape[0] <= nh and m.shape[1] <= nw:
-                variantes.append((ang, g, buf, m, bx, by))
+                variantes.append((ang, g, buf, m, bx, by,
+                                  np.conj(sfft.rfft2(m.astype(np.float32), s=P))))
         if not variantes:
             grandes.append(pz['id'])
             continue
@@ -924,22 +936,28 @@ def acomodar(piezas, cfg, res=2.0, rotaciones=None, agrupar=None):
             if idx_hoja == len(hojas):
                 hojas.append([])
                 ocupacion.append(np.zeros((nh, nw), dtype=bool))
+                espectro.append(None)
             occ = ocupacion[idx_hoja]
+            if espectro[idx_hoja] is None:
+                espectro[idx_hoja] = sfft.rfft2(occ.astype(np.float32), s=P)
             mejor = None
-            for ang, g, buf, m, bx, by in variantes:
-                libre = fftconvolve(occ.astype(np.float32),
-                                    m[::-1, ::-1].astype(np.float32), mode='valid') < 0.5
-                if not libre.any():
+            for ang, g, buf, m, bx, by, M in variantes:
+                encima = sfft.irfft2(espectro[idx_hoja] * M, s=P)
+                libre = encima[:nh - m.shape[0] + 1, :nw - m.shape[1] + 1] < 0.5
+                # El mas abajo, luego el mas a la izquierda: el primer libre en orden
+                # de renglon, que es lo que da argmax. Antes nonzero + np.lexsort
+                # ordenaban TODOS los libres para quedarse con uno (6 de 8 s del
+                # acomodo en Merida, 24 sep 2026). Mismo resultado.
+                pos = int(libre.argmax())
+                if not libre.flat[pos]:
                     continue
-                filas, cols = np.nonzero(libre)
-                j = int(np.lexsort((cols, filas))[0])          # el mas abajo, luego el mas a la izq
-                fila, col = int(filas[j]), int(cols[j])
+                fila, col = divmod(pos, libre.shape[1])
                 puntaje = (fila, col)
                 if mejor is None or puntaje < mejor[0]:
                     mejor = (puntaje, ang, g, buf, bx, by, fila, col, m)
             if mejor is None:
                 if not hojas[idx_hoja]:      # hoja recien creada y aun asi no cabe
-                    hojas.pop(); ocupacion.pop()
+                    hojas.pop(); ocupacion.pop(); espectro.pop()
                     grandes.append(pz['id'])
                     colocada = True
                 continue
@@ -954,6 +972,7 @@ def acomodar(piezas, cfg, res=2.0, rotaciones=None, agrupar=None):
                 guia = aff.translate(gg, dx, dy)
             hojas[idx_hoja].append({'pieza': pz, 'geo': geo, 'guia': guia, 'ang': ang})
             occ[fila:fila + m.shape[0], col:col + m.shape[1]] |= m
+            espectro[idx_hoja] = None
             colocada = True
             break
         if not colocada:

@@ -95,10 +95,29 @@ def _w_borde(poly, q0, u, perp, t0, t1):
 
 def detectar_contactos(placas, t_placa_modelo):
     """t_placa_modelo: espesor del carton llevado a unidades del modelo."""
+    # Prefiltro (24 sep 2026): cada par iba a shapely (_tramo) aunque las placas
+    # estuvieran en puntas opuestas del edificio: 109 mil llamadas y 14 de los 36 s
+    # de Merida. Un contacto pide un punto de la recta comun a menos de 2*alc de
+    # cada placa (alc = max(espesor de la otra, carton)/2 + 1e-4, el ancho de la
+    # franja de _tramo, mas lo que el tramo se estira por medirse con la caja), o
+    # sea que sus cajas en el mundo no pueden quedar mas lejos que r_i + r_j. El
+    # 1.5 es holgura contra el redondeo: salen los mismos contactos, en el mismo orden.
+    n = len(placas)
+    lo, hi = np.full((n, 3), np.inf), np.full((n, 3), -np.inf)
+    for k, p in enumerate(placas):
+        if p['poly'].is_empty:
+            continue                          # sin material no hay tramo: nunca pasa
+        x0, y0, x1, y1 = p['poly'].bounds     # la caja 2D llevada al mundo: la contiene
+        W = (p['a_mundo'] @ np.array([[x0, y0, 0, 1], [x1, y0, 0, 1],
+                                      [x0, y1, 0, 1], [x1, y1, 0, 1]], float).T).T[:, :3]
+        lo[k], hi[k] = W.min(axis=0), W.max(axis=0)
+    r = np.array([max(p['espesor_real'], t_placa_modelo) + 2e-4 for p in placas])
+    hueco = np.maximum(lo[None, :, :] - hi[:, None, :], lo[:, None, :] - hi[None, :, :]).max(axis=2)
+    cerca = hueco <= 1.5 * (r[:, None] + r[None, :])
     cont = []
-    for i in range(len(placas)):
-        for j in range(len(placas)):
-            if i == j:
+    for i in range(n):
+        for j in range(n):
+            if i == j or not cerca[i, j]:
                 continue
             a, b = placas[i], placas[j]      # b es la que podria topar contra a
             if abs(float(np.dot(a['normal'], b['normal']))) > TOL_PERP:

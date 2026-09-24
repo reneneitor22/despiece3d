@@ -647,5 +647,101 @@ class PlanDeSuperficies(Base):
         self.assertLess(max(p['area'] for p in elegidas), 1.0)
 
 
+# ------------------------------------------------------- revision del 24 sep
+def _caja(x0, y0, z0, x1, y1, z1):
+    b = trimesh.creation.box(extents=(x1 - x0, y1 - y0, z1 - z0))
+    b.apply_translation(((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2))
+    return b
+
+
+def _dos_pisos(extra=()):
+    """Losa, cuatro muros y otra losa a 3 m: dos plantas."""
+    partes = [_caja(0, 0, 0, 10, 8, 0.2), _caja(0, 0, 0.2, 10, 0.2, 3.0),
+              _caja(0, 7.8, 0.2, 10, 8, 3.0), _caja(0, 0.2, 0.2, 0.2, 7.8, 3.0),
+              _caja(9.8, 0.2, 0.2, 10, 7.8, 3.0), _caja(0, 0, 3.0, 10, 8, 3.2)]
+    return trimesh.util.concatenate(partes + list(extra))
+
+
+class Revision24Sep(Base):
+    def test_grabado_no_se_sale_de_la_pieza(self):
+        """recortar_choques achica la placa DESPUES de que las uniones dejaron sus
+        marcas: el grabado quedaba colgando fuera de la pieza (Engel: 32 de 143)."""
+        import estructura
+        from despiece import Config
+        from shapely.geometry import box
+        cfg = Config(100, 2.0, 0.0, (600, 900))
+        real = estructura.recortar_choques
+
+        def recorta_de_mas(placas, contactos, t):
+            r = real(placas, contactos, t)
+            for p in placas:                 # como un recorte grande: media placa fuera
+                if p.get('marcas') is not None:
+                    b = p['poly'].bounds
+                    p['poly'] = p['poly'].intersection(box(b[0], b[1], (b[0] + b[2]) / 2, b[3]))
+            return r
+        with mock.patch.object(estructura, 'recortar_choques', recorta_de_mas):
+            piezas, _ = estructura.despiece_estructural(_dos_pisos(), cfg, grabar_planta=False)
+        con_grabado = [pz for pz in piezas if pz.get('guia') is not None]
+        self.assertTrue(con_grabado)
+        for pz in con_grabado:
+            self.assertLess(pz['guia'].difference(pz['poly'].buffer(1e-6)).area, 1e-6, pz['id'])
+
+    def test_macizo_va_en_la_planta_donde_se_para(self):
+        """La escalera del segundo piso caia en la planta 1: se media con la z desde
+        el pie del propio cuerpo, no del edificio."""
+        import estructura
+        from despiece import Config
+        cfg = Config(100, 2.0, 0.0, (600, 900))
+        piezas, info = estructura.despiece_estructural(
+            _dos_pisos([_caja(4, 3, 3.2, 5, 4, 4.2)]), cfg, laminar_macizos=True)
+        macizas = [pz for pz in piezas if pz['tipo'] == 'macizo']
+        self.assertTrue(macizas)
+        self.assertEqual({pz['planta'] for pz in macizas}, {2})
+
+    def test_cache_skp_roto_se_vuelve_a_leer(self):
+        """Un .ply a medias en la cache tronaba en cada subida siguiente del modelo."""
+        import types
+        import skp
+        ruta = self.ruta('casa.skp')
+        with open(ruta, 'wb') as f:
+            f.write(b'no importa, se lee con _abrir falso')
+        caja = trimesh.creation.box(extents=(4, 3, 2))
+        # openskp entrega Y arriba: se le da asi para que salga igual que la caja
+        pos = np.column_stack((caja.vertices[:, 0], caja.vertices[:, 2], -caja.vertices[:, 1]))
+        escena = types.SimpleNamespace(glb_primitives=[types.SimpleNamespace(
+            positions=pos.ravel().tolist(), indices=caja.faces.ravel().tolist())])
+        falso = types.SimpleNamespace(build_scene=lambda: escena)
+        with mock.patch.object(skp, 'CACHE', self.tmp), \
+                mock.patch.object(skp, '_abrir', return_value=falso):
+            guardada = os.path.join(self.tmp, 'casa-%s.ply' % skp._firma(ruta))
+            with open(guardada, 'wb') as f:
+                f.write(b'ply\nformat binary_little_endian 1.0\nelement vertex 99\n')
+            m = skp.cargar_skp(ruta, avisar=False)
+            self.assertEqual(self.medidas(m), [4.0, 3.0, 2.0])
+            self.assertFalse(os.path.exists(guardada + '.tmp'))
+            self.assertEqual(self.medidas(skp.cargar_skp(ruta, avisar=False)), [4.0, 3.0, 2.0])
+
+    def test_plantas_en_orden_de_hoja(self):
+        """Una planta chica ya no regresa a llenar el hueco de una hoja anterior:
+        con 1 chica, 2 grande y 3 chica, la 3 caia en la hoja 1 junto a la 1."""
+        from despiece import Config, acomodar, ROTACIONES_ORTO
+        from shapely.geometry import box
+        piezas = [{'id': 'P%d' % n, 'poly': box(0, 0, w, h), 'guia': None,
+                   'planta': n, 'rotulo': 'PLANTA %d' % n}
+                  for n, w, h in ((1, 100, 100), (2, 400, 600), (3, 100, 100))]
+        hojas, grandes = acomodar(piezas, Config(100, 2.0, 0.0, (500, 700)),
+                                  rotaciones=ROTACIONES_ORTO, agrupar='planta')
+        self.assertFalse(grandes)
+        self.assertEqual([sorted({c['pieza']['planta'] for c in h}) for h in hojas],
+                         [[1], [2], [3]])
+
+    def test_unidades_invalidas_se_contestan(self):
+        import app
+        stl = self.ruta('cubo.stl')
+        trimesh.creation.box().export(stl)
+        r = app._procesar(stl, {'unidades': 'in', 'modo': 'curvas'}, self.tmp, 'x' * 12, 'cubo', [])
+        self.assertIn('unidades', r.get('error', ''))
+
+
 if __name__ == '__main__':
     unittest.main()

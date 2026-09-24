@@ -171,9 +171,19 @@ def cargar_skp(ruta, usar_cache=True, avisar=True):
                                 % (os.path.splitext(os.path.basename(ruta))[0].replace(' ', '_'),
                                    _firma(ruta)))
         if os.path.exists(guardada):
-            m = trimesh.load(guardada, force='mesh')
+            # Un PLY a medias (el corte se mato o se quedo sin memoria escribiendolo)
+            # tronaba en CADA subida siguiente del mismo modelo: se tira y se relee,
+            # igual que en dxf.py. 24 sep 2026.
+            try:
+                m = trimesh.load(guardada, force='mesh')
+            except Exception:
+                m = None
             if m is not None and not m.is_empty:
                 return m
+            try:
+                os.remove(guardada)
+            except OSError:
+                pass
 
     skp = _abrir(ruta)
     if avisar:
@@ -208,9 +218,14 @@ def cargar_skp(ruta, usar_cache=True, avisar=True):
     m.merge_vertices()
 
     if usar_cache:
+        # De un golpe: a .tmp y luego se renombra, para que nunca quede uno a medias.
         try:
             os.makedirs(CACHE, exist_ok=True)
-            m.export(guardada)
+            m.export(guardada + '.tmp', file_type='ply')
+            os.replace(guardada + '.tmp', guardada)
         except Exception:
-            pass
+            try:
+                os.remove(guardada + '.tmp')
+            except OSError:
+                pass
     return m

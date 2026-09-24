@@ -8,7 +8,7 @@ import shapely.affinity as aff
 from placas import (extraer_placas, nombrar, marcar_envolvente,
                     niveles_de_piso, cortar_por_piso, huellas_en_losas,
                     asignar_planta, preparar_cuerpos, tabla_obb)
-from uniones import detectar_contactos, aplicar_uniones, recortar_choques
+from uniones import detectar_contactos, aplicar_uniones, recortar_choques, _solo_poligonos
 import dbg     # dbg.marcar: la pantalla dice en cual de estos pasos va (o se atoro)
 
 DIENTE_OBJ_MM = 12.0      # ancho buscado del diente, en mm de maqueta
@@ -135,6 +135,9 @@ def rebanar_solidos(mesh, cfg, prefijo='S', preparado=None, obbs=None):
                 'poly': pz['poly'],
                 'guia': pz['guia'],
                 'z_real': pz['z_real'],
+                # z_real es desde el pie del PROPIO cuerpo; la planta se decide con
+                # donde se para en el edificio, y es la misma para todas sus rebanadas
+                'z_base': float(c.bounds[0][2]),
                 'espesor_real_cm': cfg.espesor_mm / 10.0,
                 'vanos': len(pz['poly'].interiors),
                 'dientes': 0,
@@ -335,11 +338,15 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
         minx, miny, _, _ = g.bounds
         g = aff.translate(g, -minx, -miny)
         marca = p.get('marcas')
+        # Las marcas de las uniones se dibujan ANTES de recortar_choques, que luego
+        # le quita franjas y labios a la placa: sin recortarlas aqui, el grabado se
+        # salia de la pieza (Casa Engel: 32 de 143 piezas, hasta 21 mm afuera) y el
+        # laser lo pintaba en el desperdicio o en la pieza de al lado. 24 sep 2026.
         if marca is not None and not marca.is_empty:
+            marca = _solo_poligonos(marca.intersection(p['poly']))
+        if marca is not None:
             marca = aff.translate(aff.scale(marca, cfg.a_mm, cfg.a_mm, origin=(0, 0)),
                                   -minx, -miny)
-        else:
-            marca = None
         if cfg.kerf_mm:
             g = g.buffer(cfg.kerf_mm / 2.0, join_style=2)
             if g.geom_type == 'MultiPolygon':
@@ -360,8 +367,10 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
 
     # Las escaleras y muebles laminados tambien llevan planta, si no todos caen
     # en la primera hoja y se revuelven con la planta baja.
+    # Con z_real (medida desde el pie de la escalera, no del edificio) una escalera
+    # del tercer piso caia en la planta 1 y sus rebanadas altas en otra zona.
     for pz in piezas_macizas:
-        z = float(pz.get('z_real', 0.0))
+        z = float(pz['z_base'])
         k = 0
         for i, nz in enumerate(niveles or []):
             if z >= nz - 0.30:

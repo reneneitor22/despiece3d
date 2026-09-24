@@ -818,6 +818,8 @@ def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
     import exportar
 
     unidades = campos.get('unidades', 'm')
+    if unidades not in ('m', 'cm', 'mm'):          # si no, KeyError mas abajo
+        return {'error': 'unidades invalidas: "%s" (m, cm o mm)' % unidades}
     try:
         espesor = _numero(campos.get('espesor', 3) or 3, 'el espesor (mm)', 0.3, 50)
         kerf = _numero(campos.get('kerf', 0.15) or 0, 'el kerf (mm)', 0, 5)
@@ -946,7 +948,7 @@ def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
                                       cajetin=cajetin)
         dxfs.append(dxf)
         svgs.append(svg)
-        open(os.path.join(carpeta, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w').write(svg)
+        open(os.path.join(carpeta, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w', encoding='utf-8').write(svg)
         for col in colocadas:
             area_usada += col['geo'].area
 
@@ -965,13 +967,9 @@ def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
              'material_cm2': area_usada / 100.0}
     html = exportar.guia_html(hojas, sorted(piezas, key=lambda p: p['id']), cfg, svgs,
                               nombre, grandes, stats)
-    open(os.path.join(carpeta, 'guia.html'), 'w').write(html)
+    open(os.path.join(carpeta, 'guia.html'), 'w', encoding='utf-8').write(html)
 
-    zip_path = os.path.join(carpeta, '%s_despiece.zip' % re.sub(r'[^\w\-]', '_', nombre))
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
-        for f in sorted(os.listdir(carpeta)):
-            if f.endswith(('.dxf', '.dwg', '.pdf', '.svg')) or f in ('guia.html', 'debug.log'):
-                z.write(os.path.join(carpeta, f), f)
+    zip_path = _empacar(carpeta, nombre)
     dbg.log('zip.fin', bytes=os.path.getsize(zip_path))
     dbg.log('resumen', ms_total=round((time.perf_counter() - _t0) * 1000, 1),
             n_piezas=len(piezas), n_hojas=len(hojas),
@@ -1105,7 +1103,7 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
         dxfs.append(dxf)
         svg = exportar.hoja_a_svg(col, cfg, tit, notas=notas, cajetin=cajetin)
         svgs.append(svg)
-        open(os.path.join(carpeta, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w').write(svg)
+        open(os.path.join(carpeta, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w', encoding='utf-8').write(svg)
         area += sum(c['geo'].area for c in col)
 
     with dbg.etapa('export.extras'):
@@ -1119,7 +1117,7 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
     iso_e = vista(info['placas'], explotar=(cfg.espesor_mm / cfg.a_mm) * 10)
     html = exportar.guia_estructural(hojas, piezas, cfg, svgs, nombre, grandes, stats, info,
                                      iso_a, iso_e)
-    open(os.path.join(carpeta, 'guia.html'), 'w').write(html)
+    open(os.path.join(carpeta, 'guia.html'), 'w', encoding='utf-8').write(html)
     zip_path = _empacar(carpeta, nombre)
     dbg.log('resumen', ms_total=round((time.perf_counter() - _t0) * 1000, 1),
             n_piezas=len(piezas), n_hojas=len(hojas),
