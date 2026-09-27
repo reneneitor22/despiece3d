@@ -21,7 +21,13 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
            tope_voxeles=25e6, tolerancia=0.005, solo_envolvente=False, piso=None):
     cfg = Config(escala, carton_mm, 0.0, (600, 900), unidades_modelo=unidades)
     m = cargar_modelo(ruta)
-    placas, _ = extraer_placas(m, t_modelo=carton_mm / cfg.a_mm)
+    # Las mismas placas que corta despiece_estructural: con un .ifc son SUS
+    # cuerpos y SUS tipos. Sin esto la prueba partia el IFC por conectividad y
+    # media otras piezas (FZK-Haus: 76 aqui contra 60 en la hoja, 27 sep 2026).
+    sem = m.metadata.get('semantica') or {}
+    placas, _ = extraer_placas(m, t_modelo=carton_mm / cfg.a_mm,
+                               preparado=(m, sem['cuerpos'], []) if sem.get('cuerpos') else None,
+                               tipos=sem.get('tipos'), superficies=not sem.get('cuerpos'))
     # el mismo filtro que aplica el despiece: si una placa no se corta a esta
     # escala, tampoco tiene por que aparecer en la prueba de ensamble
     placas = [p for p in placas if _cortable(p, cfg)]

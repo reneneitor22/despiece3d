@@ -33,6 +33,10 @@ CASOS = [
      500, 2, '600x900'),
     ('urban', 'casa', MODELOS + '/ladybug/obj/urban_model_001/model.obj',
      500, 2, '600x900'),
+    # 27 sep 2026, ver PRUEBAS_REALES.md
+    ('fzk', 'casa', MODELOS + '/nuevos_27sep/AC20-FZK-Haus.ifc', 50, 2, '1000x780'),
+    ('revit_arc', 'casa', MODELOS + '/nuevos_27sep/Revit_ARC.ifc', 100, 2, '1000x780'),
+    ('kenney', 'macizos', MODELOS + '/nuevos_27sep/Kenney_casa_t.fbx', 10, 2, '1000x780'),
     ('terreno_prueba', 'terreno', 'out/terreno_prueba.stl', 500, 3, '500x700'),
     ('valles', 'terreno', MODELOS + '/nasa/stl/mars_valles_mar.stl', 100, 3, '500x700'),
     ('gale', 'terreno', MODELOS + '/nasa/stl/gale_crater.STL', 200, 3, '500x700'),

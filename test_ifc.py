@@ -230,6 +230,41 @@ class TestIFC(unittest.TestCase):
             np.testing.assert_array_equal(x.vertices, y.vertices)
             np.testing.assert_array_equal(x.faces, y.faces)
 
+    def test_la_viga_del_techo_no_sale_placa(self):
+        """FZK-Haus (KIT, ArchiCAD): 42 `IfcMember` de 8 x 16 cm y 6.4 m. Su caja
+        pasa el filtro de lamina y salian muros con ranura en el techo que los
+        cubre: el techo en tiras y 1.96% de interferencia. El IFC dice que es
+        viga: no es placa, es macizo (sale solo si se pide laminar)."""
+        from placas import extraer_placas, tabla_obb
+        from estructura import cuerpos_macizos
+        from despiece import Config
+        texto = _ifc_de_prueba().replace(
+            '#60=IFCRELCONTAINEDINSPATIALSTRUCTURE(\'0PruebaCont000000001\',$,$,$,(#26,#33,#44,#50),#15);',
+            '#70=IFCRECTANGLEPROFILEDEF(.AREA.,$,#21,80.,160.);\n'
+            '#71=IFCEXTRUDEDAREASOLID(#70,#4,#2,4000.);\n'
+            '#72=IFCSHAPEREPRESENTATION(#5,\'Body\',\'SweptSolid\',(#71));\n'
+            '#73=IFCPRODUCTDEFINITIONSHAPE($,$,(#72));\n'
+            '#74=IFCMEMBER(\'0PruebaSparren0000001\',$,\'Sparren\',$,$,#12,#73,$,$);\n'
+            '#60=IFCRELCONTAINEDINSPATIALSTRUCTURE(\'0PruebaCont000000001\',$,$,$,(#26,#33,#44,#50,#74),#15);')
+        ruta = os.path.join(self.dir, 'con_viga.ifc')
+        with open(ruta, 'w') as f:
+            f.write(texto)
+        m = ifc.cargar_ifc(ruta, usar_cache=False, avisar=False)
+        sem = m.metadata['semantica']
+        self.assertEqual(len(sem['cuerpos']), 4)
+        viga = [i for i, c in enumerate(sem['cuerpos']) if c.extents.max() > 3.9
+                and sorted(c.extents)[1] < 0.2]
+        self.assertEqual(len(viga), 1)
+        prep = (m, sem['cuerpos'], [])
+        placas, _ = extraer_placas(m, preparado=prep, obbs=tabla_obb(prep[1]),
+                                   tipos=sem['tipos'], superficies=False)
+        self.assertNotIn(viga[0], [p['cuerpo'] for p in placas])
+        self.assertEqual(len(placas), 3)            # los dos muros y la losa
+        cfg = Config(50, 2.0, 0.0, (600, 900), unidades_modelo='m')
+        mac = cuerpos_macizos(m, cfg, preparado=prep, obbs=tabla_obb(prep[1]),
+                              tipos=sem['tipos'], max_lado=2.0)
+        self.assertEqual(len(mac), 1, 'la viga tiene que poder laminarse')
+
     def test_un_ifc_sin_muros_ni_losas_lo_dice(self):
         vacio = os.path.join(self.dir, 'vacio.ifc')
         texto = _ifc_de_prueba()

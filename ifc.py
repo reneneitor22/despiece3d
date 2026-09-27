@@ -90,6 +90,12 @@ MACIZOS = {
 # la geometria decide entre losa y techo.**
 FORZAR_MURO = {'IfcWall', 'IfcWallStandardCase', 'IfcWallElementedCase',
                'IfcCurtainWall'}
+# Y lo que el IFC dice que es viga, columna, barandal o escalera NO es placa
+# aunque su caja parezca lamina: un Sparren de 8 x 16 cm y 6.4 m pasa el filtro
+# de placas.py y salia muro, con ranura en el techo que lo cubre (FZK-Haus: 42
+# vigas, el techo en tiras y 1.96% de interferencia, 27 sep 2026). El proxy
+# sigue a la geometria: ahi si hay placas de verdad.
+NUNCA_PLACA = MACIZOS - {'IfcBuildingElementProxy'}
 
 
 def es_ifc(ruta):
@@ -278,7 +284,8 @@ def _leer(ruta, avisar=True, hilos=4):
                 if not it.next():
                     break
                 continue
-            tipo = 'muro' if sh.type in FORZAR_MURO else None
+            tipo = ('muro' if sh.type in FORZAR_MURO else
+                    'macizo' if sh.type in NUNCA_PLACA else None)
             try:
                 cont = UE.get_container(f.by_id(sh.id))
             except Exception:
@@ -350,7 +357,7 @@ def _leer(ruta, avisar=True, hilos=4):
 
 # ------------------------------------------------------------------- cache
 # Se sube cuando cambia lo que se guarda: los caches viejos se ignoran solos.
-CACHE_V = 2
+CACHE_V = 3      # v3: tipos trae 'macizo' (NUNCA_PLACA)
 
 
 def _guardar_cache(destino, cuerpos, tipos, plantas, resumen):

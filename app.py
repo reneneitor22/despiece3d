@@ -892,12 +892,34 @@ def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
     vaciar = campos.get('vaciar', '1') not in ('0', 'false', '')
     cfg = Config(escala, espesor, kerf, (hw, hh), unidades_modelo=unidades, vaciar=vaciar)
 
+    # Una maqueta de 7 mm o de 7 m es casi siempre la escala o las unidades mal,
+    # no lo que el alumno quiere (Kenney a 1:200 salio 'ok' con una pieza de
+    # 7 mm, 27 sep 2026). Se avisa y se corta igual.
+    lado_mm = float(max(m.extents)) * cfg.a_mm
+    if not 50 <= lado_mm <= 2000:
+        a = ('a 1:%d tu maqueta mediria %s de largo: %s para una maqueta. Revisa la '
+             'escala y las unidades del modelo (se leyo en %s).'
+             % (int(escala), '%.0f mm' % lado_mm if lado_mm < 1000 else '%.1f m' % (lado_mm / 1000),
+                'muy chica' if lado_mm < 50 else 'muy grande', unidades))
+        avisos_lector.append(a)
+        avisos_out.append(a)
+
     if campos.get('modo', 'curvas') == 'estructura':
         r = _estructural(m, cfg, carpeta, job, nombre, campos)
         if isinstance(r, dict) and r.get('ok'):
             r['segundos'] = round(time.perf_counter() - _t0, 1)
             r['avisos'] = avisos_lector + list(r.get('avisos') or [])
         return r
+
+    # Antes de rebanar: 7000 capas se comen la memoria y el proceso muere sin
+    # decir por que (Project LoopS, 27 sep 2026). El 400 de abajo queda de red.
+    from despiece import contar_capas
+    n_capas = contar_capas(m, cfg)
+    if n_capas > 400:
+        dbg.log('procesar.error', nivel='error', motivo='demasiadas_laminas', n=n_capas)
+        return {'error': 'saldrian %d laminas: a 1:%d la maqueta mediria %.0f cm de alto. '
+                         'Sube la escala o el espesor.'
+                         % (n_capas, int(escala), m.extents[2] * cfg.a_mm / 10.0)}
 
     solidificado = False
     if not m.is_watertight:

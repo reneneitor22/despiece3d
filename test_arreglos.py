@@ -743,5 +743,99 @@ class Revision24Sep(Base):
         self.assertIn('unidades', r.get('error', ''))
 
 
+class Modelos27Sep(Base):
+    """Cinco modelos bajados de internet (KIT, SketchUp, IAAC, Kenney, Revit)."""
+
+    @staticmethod
+    def casa():
+        return trimesh.creation.box(extents=(10, 8, 6))
+
+    def test_objeto_perdido_a_km_se_quita(self):
+        """Project LoopS (IAAC, Rhino): 4 mallas de 7 cm a 1.0-1.4 km bajo el
+        pabellon. El modelo media 1437 m de alto y el modo terreno moria sin
+        memoria al rebanarlo."""
+        from despiece import quitar_perdidos
+        perdido = trimesh.creation.box(extents=(0.07, 0.07, 0.07))
+        perdido.apply_translation((-12, -3, -1437))
+        m = trimesh.util.concatenate([self.casa(), perdido])
+        m.metadata = {}
+        q = quitar_perdidos(m)
+        np.testing.assert_allclose(q.extents, (10, 8, 6))
+        self.assertIn('lejos', ' '.join(q.metadata.get('despiece_avisos', [])))
+
+    def test_lo_que_no_esta_perdido_no_se_toca(self):
+        from despiece import quitar_perdidos
+        antena = trimesh.creation.box(extents=(0.1, 0.1, 30))
+        antena.apply_translation((0, 0, 3 + 15))           # pegada al techo: crece el modelo
+        otra = self.casa()
+        otra.apply_translation((1000, 0, 0))                # dos edificios a 1 km: los dos valen
+        for m in (trimesh.util.concatenate([self.casa(), antena]),
+                  trimesh.util.concatenate([self.casa(), otra])):
+            antes = m.extents.copy()
+            q = quitar_perdidos(m)
+            np.testing.assert_allclose(q.extents, antes)
+            self.assertFalse(q.metadata.get('despiece_avisos'))
+
+    def test_demasiadas_laminas_se_contesta_sin_rebanar(self):
+        import app
+        import despiece
+        stl = self.ruta('torre.stl')
+        trimesh.creation.box(extents=(1, 1, 1000)).export(stl)
+        with mock.patch.object(despiece, 'rebanar', side_effect=AssertionError('rebano')):
+            r = app._procesar(stl, {'modo': 'curvas', 'escala': '100', 'espesor': '2'},
+                              self.tmp, 'y' * 12, 'torre', [])
+        self.assertIn('5000 laminas', r.get('error', ''))
+
+    def test_forma_libre_manda_al_modo_terreno(self):
+        """Project LoopS en modo casa: 4 min y 'no se encontraron muros ni losas.
+        ¿El modelo trae cuerpos con espesor?' -- que no le dice al alumno que
+        hacer con un pabellon de forma libre."""
+        from despiece import Config
+        from estructura import despiece_estructural
+        # un bloque macizo sin una sola cara que llegue a placa
+        bloque = trimesh.creation.box(extents=(0.9, 0.9, 0.9))
+        _, info = despiece_estructural(bloque, Config(100, 2.0, 0.0, (600, 900)))
+        self.assertIn('Terreno', info.get('error', ''))
+
+    def test_placas_todas_chicas_piden_otra_escala(self):
+        from despiece import Config
+        from estructura import despiece_estructural
+        # una casita de 30 cm (losa y 3 muros) a 1:1000: todo sale de 0.3 mm
+        partes = [trimesh.creation.box(extents=e) for e in
+                  ((0.3, 0.3, 0.01), (0.3, 0.01, 0.2), (0.01, 0.3, 0.2), (0.01, 0.3, 0.2))]
+        for b, t in zip(partes, ((0, 0, 0), (0, 0.15, 0.1), (0.15, 0, 0.1), (-0.15, 0, 0.1))):
+            b.apply_translation(t)
+        casita = trimesh.util.concatenate(partes)
+        _, info = despiece_estructural(casita, Config(1000, 2.0, 0.0, (600, 900)))
+        self.assertIn('escala', info.get('error', ''))
+        self.assertNotIn('Terreno', info.get('error', ''))
+
+    def test_los_encimes_se_resumen(self):
+        """Hearst Tower (SketchUp): 291 avisos, casi todos 'se enciman', uno
+        por renglon en la pantalla."""
+        from estructura import _resumir_encimes
+        enc = ['M%d y T1 se enciman y no se pudo recortar ninguna (x)' % i for i in range(40)]
+        r = _resumir_encimes(['otro aviso'] + enc)
+        self.assertEqual(r[0], 'otro aviso')
+        self.assertLessEqual(len(r), 8)
+        self.assertIn('35', r[-1])
+        self.assertEqual(_resumir_encimes(enc[:3]), enc[:3])
+        self.assertIn('Terreno', r[-1])   # la envolvente lo empeoraba: 0.65% -> 1.63%
+
+    def test_maqueta_de_milimetros_se_avisa(self):
+        """Kenney (casa de juego, 1.41 m) con lo de fabrica, 1:200: una pieza de
+        7 mm, 'ok' y sin un solo aviso de que la escala no cuadra."""
+        import app
+        stl = self.ruta('casita.stl')
+        trimesh.creation.box(extents=(1.4, 1.3, 1.2)).export(stl)
+        avisos = []
+        r = app._procesar(stl, {'modo': 'curvas', 'escala': '200', 'espesor': '2'},
+                          self.tmp, 'z' * 12, 'casita', avisos)
+        self.assertTrue(any('mm de largo' in a for a in r.get('avisos') or []), r.get('avisos'))
+        r = app._procesar(stl, {'modo': 'curvas', 'escala': '20', 'espesor': '2'},
+                          self.tmp, 'w' * 12, 'casita', [])
+        self.assertFalse(any('de largo' in a for a in r.get('avisos') or []))
+
+
 if __name__ == '__main__':
     unittest.main()

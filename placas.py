@@ -642,10 +642,10 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
     cuerpos_macizos, que si no repite el soldado, la division y los cascos
     convexos enteros sobre los mismos cuerpos.
 
-    `tipos` es {indice de cuerpo: 'muro'} para cuando el archivo lo DICE en vez
-    de haber que deducirlo de la normal: un .ifc trae `IFCWALL` escrito (ver
-    ifc.py). Solo se pisa lo que venga en el diccionario; el resto sigue
-    saliendo de `clasificar`.
+    `tipos` es {indice de cuerpo: 'muro' | 'macizo'} para cuando el archivo lo
+    DICE en vez de haber que deducirlo de la normal: un .ifc trae `IFCWALL` o
+    `IFCMEMBER` escrito (ver ifc.py). 'macizo' no sale placa. Solo se pisa lo
+    que venga en el diccionario; el resto sigue saliendo de `clasificar`.
 
     `superficies=False` apaga el repliegue de "modelo de caras sin espesor".
     Ese repliegue existe para rescatar modelos donde deducir las placas por
@@ -668,6 +668,9 @@ def extraer_placas(mesh, min_area=MIN_AREA_REAL, min_area_sup=MIN_AREA_SUP,
     for idx, c in enumerate(cuerpos):
         if len(c.faces) < 4 or c.area < 1e-6:
             descartados.append((idx, 'astilla degenerada (%d caras)' % len(c.faces)))
+            continue
+        if (tipos or {}).get(idx) == 'macizo':
+            descartados.append((idx, 'viga, columna o escalera segun el archivo: no es lamina'))
             continue
         caja = obbs[idx] if obbs is not None else None
         if caja is None:

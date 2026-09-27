@@ -28,6 +28,28 @@ git clone --depth 1 https://github.com/va3c/nasa-samples.git modelos_prueba/nasa
 | Valles Marineris | `nasa/stl/mars_valles_mar.stl` | topografía de Marte, 247 mil caras | terreno |
 | Cráter Gale | `nasa/stl/gale_crater.STL` | topografía de Marte, 526 mil caras | terreno |
 
+### Cinco más, bajados el 27 sep 2026 (formatos que usan los alumnos)
+
+Van en `modelos_prueba/nuevos_27sep/`. Ninguno pide cuenta:
+
+```bash
+D=modelos_prueba/nuevos_27sep; mkdir -p $D
+curl -L -o $D/AC20-FZK-Haus.ifc https://www.ifcwiki.org/images/e/e3/AC20-FZK-Haus.ifc
+curl -L -o $D/Revit_ARC.ifc https://github.com/youshengCode/IfcSampleFiles/raw/main/Ifc4_Revit_ARC.ifc
+curl -L -o $D/Hearst_Tower.skp "https://github.com/SketchUp/testup-2/raw/HEAD/tests/SketchUp%20Ruby%20API/TC_Sketchup_Texture/Hearst+Tower+(New+York)-su2020.skp"
+curl -L -o $D/Project_LoopS.3dm "https://github.com/MRAC-IAAC/Pavilion-Topology/raw/HEAD/Project%20LoopS/Project%20LoopS.3dm"
+curl -L -o $D/kenney.zip https://kenney.nl/media/pages/assets/city-kit-suburban/2c871b7af2-1745479373/kenney_city-kit-suburban_20.zip
+unzip -j $D/kenney.zip "Models/FBX format/building-type-t.fbx" -d $D && mv $D/building-type-t.fbx $D/Kenney_casa_t.fbx
+```
+
+| modelo | fuente | qué es | lo que enseñó |
+|---|---|---|---|
+| FZK-Haus (IFC, 2.6 MB) | KIT Karlsruhe, ArchiCAD | casa de 2 plantas con techo a dos aguas | 42 vigas del techo (`IfcMember`) salían muro y rebanaban el techo: 1.96% de interferencia. Ahora 0.00% |
+| Revit ARC (IFC, 13.6 MB) | muestra de Revit | edificio 70 × 55 m, muro cortina | parteluces y escaleras salían placas ("techos" falsos) |
+| Hearst Tower (SKP, 5 MB) | repo de pruebas de SketchUp | torre de 184 m, caras sin espesor y diagrid | en casa no cierra (0.65%): va en modo terreno |
+| Project LoopS (3DM, 21 MB) | IAAC Barcelona, pabellón de alumnos | forma libre + 3 mallas perdidas a 1.4 km | el terreno moría sin memoria (7000 capas); ahora se quitan los perdidos |
+| Kenney casa T (FBX, 82 KB) | Kenney, CC0 | casa de videojuego, maciza | a 1:200 salía UNA pieza de 7 mm sin aviso |
+
 ## Correr la batería
 
 ```bash

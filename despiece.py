@@ -42,6 +42,71 @@ class Config:
 
 
 def cargar_modelo(ruta):
+    """El modelo del archivo, sin la geometria perdida lejos (ver quitar_perdidos)."""
+    return quitar_perdidos(_cargar_modelo(ruta))
+
+
+def quitar_perdidos(m, fraccion=0.005, colchon=1.0, crece=1.5):
+    """Tira los objetos perdidos lejos del modelo y lo dice.
+
+    El archivo del alumno trae de todo: copias viejas, guias, una malla que se
+    fue al otro lado del mundo. Project LoopS (IAAC, Rhino) traia 4 mallas de
+    7 cm a 1.0-1.4 km bajo el pabellon: el modelo media 1437 m de alto, la
+    escala salia absurda y el modo terreno moria sin memoria (27 sep 2026).
+
+    El nucleo es la caja del 0.5% al 99.5% del AREA en cada eje; se tira cada
+    pedazo conectado que quede entero a mas de `colchon` veces el nucleo de su
+    orilla, y solo si con eso el modelo se encoge mas de `crece` veces. Lo que
+    toca el nucleo (una antena pegada al techo) no se toca, y dos edificios
+    grandes lejos uno del otro son los dos nucleo.
+    """
+    import numpy as np
+    if (m.metadata or {}).get('semantica') or len(m.faces) < 8:
+        return m    # ponytail: el IFC no se filtra (sus cuerpos van indexados); hacerlo por cuerpo si aparece uno
+    c, a = m.triangles_center, m.area_faces
+    total = float(a.sum())
+    if total <= 0:
+        return m
+    lo, hi = np.empty(3), np.empty(3)
+    for k in range(3):
+        o = np.argsort(c[:, k], kind='stable')
+        acum = np.cumsum(a[o]) / total
+        lo[k] = c[o[min(np.searchsorted(acum, fraccion), len(o) - 1)], k]
+        hi[k] = c[o[min(np.searchsorted(acum, 1 - fraccion), len(o) - 1)], k]
+    margen = colchon * max(float((hi - lo).max()), 1e-9)
+    lejos = ((c < lo - margen) | (c > hi + margen)).any(axis=1)
+    if not lejos.any():
+        return m
+    etiqueta = trimesh.graph.connected_component_labels(m.face_adjacency, node_count=len(m.faces))
+    # un pedazo se va solo si TODAS sus caras estan lejos
+    cerca = np.zeros(etiqueta.max() + 1, dtype=bool)
+    cerca[etiqueta[~lejos]] = True
+    quitar = ~cerca[etiqueta]
+    if not quitar.any() or quitar.all():
+        return m
+    antes = float(m.extents.max())
+    quedan = m.vertices[m.faces[~quitar]].reshape(-1, 3)
+    despues = float(np.ptp(quedan, axis=0).max())
+    if antes < crece * despues:
+        return m
+    n = len(np.unique(etiqueta[quitar]))
+    m.update_faces(~quitar)             # en su lugar: copiar 5 M caras no se paga
+    m.remove_unreferenced_vertices()
+    m.metadata['despiece_avisos'] = list(m.metadata.get('despiece_avisos') or []) + [
+        'se quitaron %d objeto(s) perdido(s) lejos del modelo: media %.0f y ahora %.1f '
+        '(en sus unidades). Si eran parte del proyecto, acercalos en tu programa '
+        'y vuelve a subirlo.' % (n, antes, despues)]
+    return m
+
+
+def contar_capas(mesh, cfg):
+    """Cuantas laminas saldrian, sin rebanar: el tope se revisa ANTES, porque
+    rebanar 7000 capas se come la memoria antes de llegar a contarlas."""
+    paso_modelo = cfg.espesor_mm / cfg.a_mm
+    return max(1, int(math.floor(float(mesh.extents[2]) / paso_modelo)))
+
+
+def _cargar_modelo(ruta):
     """Abre el modelo diciendo QUE paso cuando no se puede.
 
     Un alumno baja lo que sea: la pagina de error del sitio guardada con
@@ -108,7 +173,7 @@ def cargar_modelo(ruta):
         tmp = tempfile.mkdtemp(prefix='despiece_zip_')
         try:
             interior, aviso = desempacar(ruta, tmp)
-            m = cargar_modelo(interior)
+            m = _cargar_modelo(interior)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         if aviso:
@@ -534,8 +599,8 @@ def rebanar(mesh, cfg, min_area_mm2=4.0):
     Devuelve lista de capas: {n, z_modelo, z_real_m, polys[mm de maqueta]}
     """
     paso_modelo = cfg.espesor_mm / cfg.a_mm       # cuanto sube cada lamina, en unidades del modelo
-    z0, z1 = float(mesh.bounds[0][2]), float(mesh.bounds[1][2])
-    n_capas = max(1, int(math.floor((z1 - z0) / paso_modelo)))
+    z0 = float(mesh.bounds[0][2])
+    n_capas = contar_capas(mesh, cfg)
 
     alturas = [(i + 0.5) * paso_modelo for i in range(n_capas)]  # relativas a z0
     # section_multiplane recorre el BVH una sola vez: ~10x mas rapido que

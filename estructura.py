@@ -45,7 +45,7 @@ MAX_REBANADAS = 120           # por cuerpo: mas que esto no lo pega nadie
 
 
 def cuerpos_macizos(mesh, cfg, razon=RAZON_PLACA_SOL, min_vol_mm3=MIN_VOL_MM3,
-                    max_lado=MAX_LADO_MODELO, preparado=None, obbs=None):
+                    max_lado=MAX_LADO_MODELO, preparado=None, obbs=None, tipos=None):
     """Los cuerpos que NO son lamina: escaleras, barandales, muebles, columnas.
 
     placas.py los descarta con razon, porque no hay forma de sacarles una placa:
@@ -79,7 +79,10 @@ def cuerpos_macizos(mesh, cfg, razon=RAZON_PLACA_SOL, min_vol_mm3=MIN_VOL_MM3,
             continue
         _, ext, _ = caja
         esp, _, largo = ext
-        if largo <= 1e-9 or esp / max(largo, 1e-9) <= razon:
+        # 'macizo' es el IFC diciendo viga o columna: placas.py no la tomo
+        # aunque parezca lamina, asi que aqui si cuenta
+        if largo <= 1e-9 or ((tipos or {}).get(idx) != 'macizo'
+                             and esp / max(largo, 1e-9) <= razon):
             continue                                # es lamina: ya la vio placas.py
         if float(np.prod(ext)) < v_min:
             continue
@@ -89,7 +92,23 @@ def cuerpos_macizos(mesh, cfg, razon=RAZON_PLACA_SOL, min_vol_mm3=MIN_VOL_MM3,
     return macizos
 
 
-def rebanar_solidos(mesh, cfg, prefijo='S', preparado=None, obbs=None):
+def _resumir_encimes(avisos, tope=5):
+    """Los primeros `tope` "se enciman" y un renglon con el resto. Hearst Tower
+    (SketchUp) daba 291 avisos, uno por renglon en la pantalla: nadie los lee y
+    el que importa --que ahi no va a cerrar-- se pierde."""
+    enc = [a for a in avisos if 'se enciman y no se pudo recortar' in a]
+    if len(enc) <= tope:
+        return avisos
+    otros = [a for a in avisos if 'se enciman y no se pudo recortar' not in a]
+    return otros + enc[:tope] + [
+        '... y %d pares mas se enciman sin poder recortarse (%d en total): en esos '
+        'encuentros la maqueta no va a cerrar al armar. Casi siempre es el modelo '
+        '(piezas metidas una en otra, o caras sin espesor): corrigelo, o usa "Terreno / '
+        'topografia", que lo saca en rebanadas apiladas que siempre cierran.'
+        % (len(enc) - tope, len(enc))]
+
+
+def rebanar_solidos(mesh, cfg, prefijo='S', preparado=None, obbs=None, tipos=None):
     """Una escalera no se corta: se LAMINA. Se rebana en horizontal cada espesor
     de carton y se apilan las rebanadas, igual que el modo terreno.
 
@@ -97,7 +116,7 @@ def rebanar_solidos(mesh, cfg, prefijo='S', preparado=None, obbs=None):
     mismo acomodo y a la misma guia.
     """
     from despiece import rebanar, armar_piezas, solidificar
-    macizos = cuerpos_macizos(mesh, cfg, preparado=preparado, obbs=obbs)
+    macizos = cuerpos_macizos(mesh, cfg, preparado=preparado, obbs=obbs, tipos=tipos)
     piezas, resumen = [], []
     for k, c in enumerate(macizos, 1):
         nombre = '%s%d' % (prefijo, k)
@@ -246,9 +265,20 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
         placas = placas[:MAX_PLACAS]
 
     if not placas:
-        return [], {'error': 'no se encontraron muros ni losas. '
-                             '¿El modelo trae cuerpos con espesor?',
-                    'descartados': descartados}
+        # Que haga algo con esto: "¿trae cuerpos con espesor?" no le dice nada a
+        # quien subio un pabellon de forma libre (Project LoopS, 27 sep 2026).
+        if incortables >= 3:
+            error = ('las %d placas que salieron quedan mas chicas que %.0f mm a 1:%d. '
+                     'Usa una escala mas grande (1:%d en vez de 1:%d).'
+                     % (incortables, MIN_LADO_MM, int(cfg.escala),
+                        max(1, int(cfg.escala) // 4), int(cfg.escala)))
+        else:
+            error = ('no se encontraron muros ni losas planas que se puedan cortar. '
+                     'Si es una forma libre '
+                     '(pabellon, escultura, cubierta curva), cambia a "Terreno / '
+                     'topografia": la corta en rebanadas. Si es una casa, revisa que '
+                     'los muros tengan espesor y no sean caras sueltas.')
+        return [], {'error': error, 'descartados': descartados}
     nombrar(placas)
 
     # espesor del carton llevado a unidades del modelo
@@ -262,7 +292,9 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
             'el %s trae los elementos nombrados: %d de ellos son muros, losas y '
             'techos y %s no van en la maqueta (%s). Las plantas salen del '
             'archivo: %s'
-            % (sem.get('origen', 'archivo').upper(), r.get('n_cuerpos', 0),
+            % (sem.get('origen', 'archivo').upper(),
+               r.get('n_cuerpos', 0) - sum(1 for v in (sem.get('tipos') or {}).values()
+                                           if v == 'macizo'),
                sum(r.get('fuera', {}).values()),
                ', '.join('%d %s' % (n, c.replace('Ifc', '').lower())
                          for c, n in sorted(r.get('fuera', {}).items(),
@@ -302,16 +334,22 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
     dbg.marcar('macizos')
     if laminar_macizos:
         piezas_macizas, resumen_macizos = rebanar_solidos(mesh, cfg,
-                                                          preparado=preparado, obbs=obbs)
+                                                          preparado=preparado, obbs=obbs,
+                                                          tipos=sem.get('tipos'))
     else:
         try:
-            n_mac = len(cuerpos_macizos(mesh, cfg, preparado=preparado, obbs=obbs))
+            n_mac = len(cuerpos_macizos(mesh, cfg, preparado=preparado, obbs=obbs,
+                                        tipos=sem.get('tipos')))
         except Exception:
             n_mac = 0
         if n_mac:
+            # Lo lee el alumno en la pantalla: la bandera de la terminal no le
+            # sirve, la casilla si (Kenney, 27 sep 2026: la casa entera era
+            # macizo y la hoja salio con UNA pieza).
             avisos_previos.append('el modelo trae %d cuerpo(s) macizo(s) (escaleras, '
-                                  'muebles, columnas) que no son lamina: corre con '
-                                  '--laminar-macizos para sacarlos en rebanadas' % n_mac)
+                                  'vigas, muebles, columnas) que no son lamina y no van '
+                                  'en las hojas. Para sacarlos en rebanadas marca '
+                                  '"Laminar escaleras y muebles"' % n_mac)
     for nombre_m, n_reb, alto, motivo in resumen_macizos:
         if n_reb:
             avisos_previos.append('%s va laminado: %d rebanadas, %.0f mm de alto'
@@ -398,7 +436,7 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
         'n_huellas': n_huellas,
         'n_bastidor': n_bastidor,
         'n_plantas': max([p.get('planta', 1) for p in placas] or [1]),
-        'avisos': avisos_previos + avisos_recorte,
+        'avisos': avisos_previos + _resumir_encimes(avisos_recorte),
         'descartados': descartados,
         'por_tipo': {t: sum(1 for p in placas if p['tipo'] == t)
                      for t in ('muro', 'losa', 'techo')},
