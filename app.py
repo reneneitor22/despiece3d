@@ -650,7 +650,10 @@ def _notas(ops, material, cfg):
     legenda = '  ·  '.join(
         '%s %s' % (exportar.nombre_color(ops[k]['rgb']).upper(), verbo)
         for k, verbo in orden)
+    # El archivo ya viene en ese orden, pero LightBurn y RDWorks lo reordenan
+    # si el operador optimiza la ruta: se le dice tambien con palabras.
     return [legenda,
+            'PRIMERO GRABA Y MARCA  ·  AL FINAL CORTA, LOS HUECOS ANTES QUE EL CONTORNO',
             '%s  ·  hoja %g x %g mm  ·  escala 1:%d'
             % (material or 'material sin especificar', cfg.hoja[0], cfg.hoja[1],
                int(cfg.escala))]
@@ -1060,7 +1063,8 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
     from isometrica import vista
     import exportar
 
-    con_uniones = campos.get('uniones', '1') not in ('0', 'false', '')
+    # A tope de fabrica: es como arma la mayoria (pegado), no a presion.
+    con_uniones = campos.get('uniones', '0') not in ('0', 'false', '')
     envolvente = campos.get('envolvente', '0') in ('1', 'true', 'on')
     macizos = campos.get('macizos', '0') in ('1', 'true', 'on')
     grabar_planta = campos.get('planta_grabada', '1') not in ('0', 'false', '')
@@ -1160,6 +1164,7 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
             'escala': int(cfg.escala), 'espesor': cfg.espesor_mm,
             'grandes': grandes, 'unidades': cfg.unidades_modelo,
             'por_tipo': info['por_tipo'], 'n_uniones': info['n_uniones'],
+            'uniones_pedidas': con_uniones,
             'n_recortes': info['n_recortes'], 'avisos': info.get('avisos', []),
             'descartados': len(info.get('descartados', [])),
             'cabe_en': [round(usada[0] + cfg.margen_mm), round(usada[1] + cfg.margen_mm)],
@@ -1417,8 +1422,8 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
   <div id="cUniones">
    <label>Uniones</label>
    <div class="seg">
-    <label><input type="radio" name="un" value="1" checked><span>Con dientes</span></label>
-    <label><input type="radio" name="un" value="0"><span>A tope</span></label>
+    <label><input type="radio" name="un" value="0" checked><span>A tope</span></label>
+    <label><input type="radio" name="un" value="1"><span>Con dientes</span></label>
    </div>
   </div>
   <div id="cPiso">
@@ -1866,7 +1871,7 @@ function pintarEstructura(d){
   if(d.grandes&&d.grandes.length)avisos+='<div class="aviso"><b>'+d.grandes.length+
     ' pieza(s) no caben en la hoja</b> ('+esc(d.grandes.join(', '))+'). Sube la escala o usa hoja más grande.</div>';
   (d.avisos||[]).forEach(a=>avisos+='<div class="aviso">'+esc(a)+'</div>');
-  if(!d.n_uniones)avisos+='<div class="aviso">No se generó ninguna unión: las piezas van '+
+  if(d.uniones_pedidas&&!d.n_uniones)avisos+='<div class="aviso">No se generó ninguna unión: las piezas van '+
     'a tope y hay que pegarlas. Suele pasar si los muros son caras sin espesor.</div>';
   if(d.descartados)avisos+='<div class="aviso gris">'+
     'Se ignoraron '+d.descartados+' cuerpos que no son láminas (astillas o sólidos macizos).</div>';

@@ -839,3 +839,89 @@ class Modelos27Sep(Base):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OrdenDeCorte(Base):
+    """Comparado contra despieces reales (28 sep): escribiamos el contorno ANTES
+    que sus huecos y el grabado despues del corte. Si la maquina corta en el
+    orden del archivo, la pieza se suelta y las ventanas, ranuras y grabado
+    salen movidos. Y el acomodo mete piezas dentro de huecos (Revit ARC: 3)."""
+
+    def hoja(self):
+        from despiece import Config
+        from shapely.geometry import box
+        muro = box(0, 0, 200, 100).difference(box(50, 20, 150, 80))   # ventana grande
+        adentro = box(60, 30, 90, 60)                                  # pieza acomodada en la ventana
+        suelta = box(250, 0, 300, 50).difference(box(270, 20, 280, 30))
+        cols = [{'pieza': {'id': i}, 'geo': g, 'guia': gu} for i, g, gu in (
+            ('M1', muro, box(5, 5, 45, 95).boundary.buffer(0.2)),
+            ('M2', adentro, None),
+            ('M3', suelta, box(255, 5, 265, 45).boundary.buffer(0.2)))]
+        return cols, Config(100, 2.0, 0.0, (400, 200))
+
+    def revisar(self, cortes, grabados_antes):
+        """`cortes`: anillos de corte en el orden del archivo, como listas de (x, y)."""
+        from shapely.geometry import Polygon
+        area = [round(Polygon(a).area) for a in cortes]
+        pos = {a: i for i, a in enumerate(area)}
+        self.assertLess(pos[900], pos[6000])       # la pieza de la ventana antes que la ventana
+        self.assertLess(pos[6000], pos[20000])     # la ventana antes que el contorno del muro
+        self.assertLess(pos[100], pos[2500])       # el hueco de M3 antes que su contorno
+        self.assertTrue(grabados_antes, 'hay grabado despues del primer corte')
+
+    def test_dxf(self):
+        import ezdxf
+        import exportar
+        cols, cfg = self.hoja()
+        ruta = self.ruta('h.dxf')
+        exportar.hoja_a_dxf(cols, cfg, ruta, 'prueba', marco=False)
+        ents = [e for e in ezdxf.readfile(ruta).modelspace() if e.dxf.layer in ('CORTE', 'GRABADO')]
+        capas = [e.dxf.layer for e in ents]
+        primero = capas.index('CORTE')
+        self.revisar([[p[:2] for p in e.get_points()] for e in ents if e.dxf.layer == 'CORTE'],
+                     'GRABADO' in capas and 'GRABADO' not in capas[primero:])
+
+    def test_svg_y_pdf(self):
+        import re
+        import exportar
+        cols, cfg = self.hoja()
+        svg = exportar.hoja_a_svg(cols, cfg, 'prueba')
+        paths = re.findall(r'<path d="([^"]+)" fill="none" stroke="(#[0-9a-f]+)"', svg)
+        colores = [c for _, c in paths]
+        cortes = [[tuple(map(float, par.split())) for par in sub.strip(' MZ').split(' L ')]
+                  for d, c in paths if c == '#e11d48' for sub in d.split(' Z') if sub.strip()]
+        self.revisar(cortes, '#2563eb' not in colores[colores.index('#e11d48'):])
+        # el PDF sale del mismo _anillos_de_corte: basta con que se genere
+        exportar.hojas_a_pdf([cols], cfg, self.ruta('h.pdf'), 'prueba')
+        self.assertGreater(os.path.getsize(self.ruta('h.pdf')), 500)
+
+
+class ATopeDeFabrica(Base):
+    """28 sep: la mayoria arma a tope y pegado, no a presion. De fabrica sale a
+    tope, la guia no manda a buscar dientes y la pantalla no avisa de "ninguna
+    union" como si fuera falla."""
+
+    def correr(self, **extra):
+        import app
+        stl = self.ruta('casa.stl')
+        _dos_pisos().export(stl)
+        carpeta = os.path.join(self.tmp, 'out_%s' % extra.get('uniones', 'fab'))
+        os.makedirs(carpeta)
+        campos = dict({'unidades': 'm', 'modo': 'estructura', 'escala': '100'}, **extra)
+        r = app._procesar(stl, campos, carpeta, 'x' * 12, 'casa', [])
+        self.assertFalse(r.get('error'), r.get('error'))
+        with open(os.path.join(carpeta, 'guia.html'), encoding='utf-8') as f:
+            return r, f.read()
+
+    def test_sin_pedirlo_sale_a_tope(self):
+        r, guia = self.correr()
+        self.assertFalse(r['uniones_pedidas'])
+        self.assertEqual(r['n_uniones'], 0)
+        self.assertNotIn('dientes.', guia)
+        self.assertIn('pega sobre ella los muros', guia)
+
+    def test_con_dientes_si_se_piden(self):
+        r, guia = self.correr(uniones='1')
+        self.assertTrue(r['uniones_pedidas'])
+        self.assertGreater(r['n_uniones'], 0)
+        self.assertIn('por los dientes', guia)

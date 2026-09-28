@@ -81,6 +81,39 @@ def _anillos(geom):
     return out
 
 
+def _anillos_de_corte(colocadas):
+    """Anillos de CORTE, pieza por pieza, en el orden en que se deben cortar.
+
+    Cortar el contorno suelta la pieza: lo que se corte despues dentro de ella
+    (ventanas, ranuras) sale movido. Por eso cada pieza trae sus huecos primero
+    y su contorno al final. Y como el acomodo usa los huecos como espacio libre
+    (en Revit ARC caen 3 piezas dentro de la ventana de otra), la pieza que vive
+    dentro de un hueco va antes que la que la rodea: se ordena por cuantas
+    piezas la rodean, de mas a menos. `sorted` es estable, asi que lo demas
+    sigue en el orden del acomodo y la cabeza no brinca de mas.
+    """
+    from shapely.geometry import Polygon
+    from shapely.strtree import STRtree
+    piezas = [_anillos(c['geo']) for c in colocadas]
+    llenos, duenos = [], []
+    for i, partes in enumerate(piezas):
+        for ext, _ in partes:
+            llenos.append(Polygon(ext))
+            duenos.append(i)
+    if not llenos:
+        return []
+    arbol = STRtree(llenos)
+
+    def rodean(i):
+        pt = colocadas[i]['geo'].representative_point()
+        return len({duenos[j] for j in arbol.query(pt)
+                    if duenos[j] != i and llenos[j].contains(pt)})
+
+    orden = sorted(range(len(piezas)), key=lambda i: -rodean(i))
+    return [[r for _, ints in piezas[i] for r in ints] + [ext for ext, _ in piezas[i]]
+            for i in orden]
+
+
 def _xml(txt):
     """Un nombre de proyecto con & o < rompe el SVG en silencio."""
     return (str(txt).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
@@ -285,13 +318,12 @@ def hoja_a_dxf(colocadas, cfg, ruta, titulo, ops=None, ficha=None, marco=True,
         msp.add_lwpolyline([(0, 0), (W, 0), (W, H), (0, H)], close=True,
                            dxfattribs={'layer': L_HOJA})
 
+    # Orden de entidades = orden en que corta la maquina cuando el operador no
+    # optimiza: primero todo lo que se graba o marca (la pieza sigue fija en la
+    # lamina) y al final el corte, cada pieza con sus huecos antes que su
+    # contorno. Al reves, el grabado y las ranuras salen movidos.
     for col in colocadas:
         pz = col['pieza']
-        for ext, ints in _anillos(col['geo']):
-            msp.add_lwpolyline(ext, close=True, dxfattribs={'layer': L_CORTE})
-            for r in ints:
-                msp.add_lwpolyline(r, close=True, dxfattribs={'layer': L_CORTE})
-
         if col['guia'] is not None:
             for ext, ints in _anillos(col['guia']):
                 msp.add_lwpolyline(ext, close=True, dxfattribs={'layer': L_GRAB})
@@ -333,7 +365,11 @@ def hoja_a_dxf(colocadas, cfg, ruta, titulo, ops=None, ficha=None, marco=True,
     if cajetin:
         _cajetin(msp, colocadas, cajetin, L_GRAB)
 
-    bajo = _tabla_corte(msp, cfg, ficha, ops, W, capa=L_HOJA) if ficha else 0.0
+    for anillos in _anillos_de_corte(colocadas):
+        for r in anillos:
+            msp.add_lwpolyline(r, close=True, dxfattribs={'layer': L_CORTE})
+
+    bajo =_tabla_corte(msp, cfg, ficha, ops, W, capa=L_HOJA) if ficha else 0.0
 
     # Sin esto el archivo abre en un zoom cualquiera y el operador puede ver una
     # pantalla vacia hasta que se le ocurre hacer Zoom Extents. Lo que enmarca
@@ -367,27 +403,28 @@ def hoja_a_svg(colocadas, cfg, titulo, rotulo_zona='%s', notas=None,
          'stroke-width="0.3"/>' % (arriba, W, H),
          '<g transform="translate(0,%.3f) scale(1,-1)">' % Ht]
 
-    def path_de(geom, color, grosor, punteado=False):
-        d = []
-        for ext, ints in _anillos(geom):
-            for anillo in [ext] + ints:
-                d.append('M ' + ' L '.join('%.3f %.3f' % (x, y) for x, y in anillo) + ' Z')
+    def path_de(anillos, color, grosor, punteado=False):
+        d = ['M ' + ' L '.join('%.3f %.3f' % (x, y) for x, y in a) + ' Z' for a in anillos]
         if not d:
             return
         dash = ' stroke-dasharray="2 1.5"' if punteado else ''
         p.append('<path d="%s" fill="none" stroke="%s" stroke-width="%.2f"%s/>'
                  % (' '.join(d), color, grosor, dash))
 
+    # Mismo orden que el DXF (LightBurn tambien lee SVG): grabado primero, corte
+    # al final y cada pieza con sus huecos antes que su contorno.
     etiquetas = []
     for col in colocadas:
         pz = col['pieza']
         g = col['geo']
-        path_de(g, '#e11d48', 0.35)
         if col['guia'] is not None:
-            path_de(col['guia'], '#2563eb', 0.25, punteado=True)
+            path_de([r for ext, ints in _anillos(col['guia']) for r in [ext] + ints],
+                    '#2563eb', 0.25, punteado=True)
         rp = g.representative_point()
         etiquetas.append((rp.x, rp.y, _xml(pz['id']),
                           max(2.5, min(6.0, (g.bounds[2] - g.bounds[0]) / 8.0))))
+    for anillos in _anillos_de_corte(colocadas):
+        path_de(anillos, '#e11d48', 0.35)
 
     if cajetin:
         lineas = [str(x) for x in cajetin if str(x).strip()]
@@ -525,6 +562,18 @@ def guia_estructural(hojas, piezas, cfg, svgs, nombre, grandes, stats, info,
         '<section class="hoja"><h2>Hoja %d <small>%d piezas</small></h2>%s</section>'
         % (i + 1, len(hojas[i]), s) for i, s in enumerate(svgs))
 
+    # A tope (lo de fabrica, o si no salio ninguna union) no hay dientes que
+    # clavar: decirle "por los dientes" al alumno lo pone a buscar algo que no hay.
+    if info.get('n_uniones'):
+        base = 'Empieza por la base (L…) y clava en ella los muros (M…) por los dientes.'
+        cierre = 'Los dientes entran a presión. Si aprieta de más, lija el diente; no fuerces el cartón.'
+    else:
+        base = 'Empieza por la base (L…) y pega sobre ella los muros (M…), de canto.'
+        cierre = ('Todo va a tope: pega con poco pegamento blanco y sostén cada muro a escuadra '
+                  'unos segundos.')
+        if any(p['ranuras'] for p in piezas):
+            cierre += ' Donde dos muros se cruzan traen una ranura: se encajan una en la otra.'
+
     return """<!doctype html><meta charset="utf-8">
 <title>Despiece 3D — %(nombre)s</title>
 <style>
@@ -577,11 +626,11 @@ ol.pasos li{margin:4px 0}
      <b style="color:#2563eb">azules punteadas</b> sólo se graban.</li>
  <li>Cada hoja trae una o varias <b>zonas rotuladas</b> (PLANTA 1, PLANTA 2…). No mezcles
      piezas de zonas distintas: cada zona es un nivel de la maqueta y se arma completo.</li>
- <li>Empieza por la base (L…) y clava en ella los muros (M…) por los dientes.</li>
+ <li>%(base)s</li>
  <li>La losa trae <b>grabada la planta de sus muros</b>, puertas incluidas: pon cada muro sobre
      su línea. Si no coincide ninguna, la pieza va al revés o es de otro nivel.</li>
  <li>Cierra con los faldones del techo (T…). Estos suelen ir pegados al final.</li>
- <li>Los dientes entran a presión. Si aprieta de más, lija el diente; no fuerces el cartón.</li>
+ <li>%(cierre)s</li>
 </ol>
 <h2 style="font-size:15px;margin:26px 0 8px">Piezas</h2>
 <table><thead><tr><th>Pieza</th><th>Tipo</th><th>Medida</th><th>Vanos</th>
@@ -595,7 +644,7 @@ ol.pasos li{margin:4px 0}
                  n_uniones=info.get('n_uniones', 0), material=stats.get('material_cm2', 0),
                  n_plantas=info.get('n_plantas', 1),
                  avisos=avisos, iso_a=iso_armada, iso_e=iso_explotada,
-                 filas=filas, laminas=laminas)
+                 filas=filas, laminas=laminas, base=base, cierre=cierre)
 
 
 # ------------------------------------------------------------------- PDF
@@ -621,29 +670,23 @@ def hojas_a_pdf(hojas, cfg, ruta, titulo_base):
         c.setStrokeColorRGB(0.72, 0.72, 0.75)
         c.rect(0, 0, W * MM, H * MM, stroke=1, fill=0)
 
-        for col in colocadas:
-            c.setStrokeColorRGB(0.88, 0.11, 0.28)          # corte
-            c.setDash()
-            for ext, ints in _anillos(col['geo']):
-                for anillo in [ext] + ints:
-                    p = c.beginPath()
-                    p.moveTo(anillo[0][0] * MM, anillo[0][1] * MM)
-                    for x, y in anillo[1:]:
-                        p.lineTo(x * MM, y * MM)
-                    p.close()
-                    c.drawPath(p, stroke=1, fill=0)
+        def trazo(anillo):
+            p = c.beginPath()
+            p.moveTo(anillo[0][0] * MM, anillo[0][1] * MM)
+            for x, y in anillo[1:]:
+                p.lineTo(x * MM, y * MM)
+            p.close()
+            c.drawPath(p, stroke=1, fill=0)
 
+        # Mismo orden que el DXF: grabado primero, corte al final, huecos antes
+        # que el contorno de su pieza.
+        for col in colocadas:
             if col['guia'] is not None:
                 c.setStrokeColorRGB(0.15, 0.39, 0.92)      # grabado
                 c.setDash(2 * MM, 1.5 * MM)
                 for ext, ints in _anillos(col['guia']):
                     for anillo in [ext] + ints:
-                        p = c.beginPath()
-                        p.moveTo(anillo[0][0] * MM, anillo[0][1] * MM)
-                        for x, y in anillo[1:]:
-                            p.lineTo(x * MM, y * MM)
-                        p.close()
-                        c.drawPath(p, stroke=1, fill=0)
+                        trazo(anillo)
                 c.setDash()
 
             g = col['geo']
@@ -655,6 +698,11 @@ def hojas_a_pdf(hojas, cfg, ruta, titulo_base):
             # que el numero quede centrado en la pieza y no encima del borde.
             c.drawCentredString(rp.x * MM, (rp.y * MM) - alto * MM * 0.36,
                                 str(col['pieza']['id']))
+
+        c.setStrokeColorRGB(0.88, 0.11, 0.28)              # corte
+        for anillos in _anillos_de_corte(colocadas):
+            for anillo in anillos:
+                trazo(anillo)
 
         c.setFillColorRGB(0.42, 0.42, 0.45)
         c.setFont('Helvetica', 4 * MM)
