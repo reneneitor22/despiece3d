@@ -1043,3 +1043,48 @@ class CajetinUnaVez(Base):
         con = [f for f in dxfs if list(ezdxf.readfile(os.path.join(carpeta, f))
                                        .modelspace().query('TEXT[layer=="GRABADO"]'))]
         self.assertEqual(con, dxfs[:1])
+
+
+class AnchoUtil(Base):
+    """29 sep: `_cortable` solo miraba la caja envolvente. Un marco en U de 19x146 mm
+    con riel de 0.5 mm (MainStreet 1:500, muro cuyo hueco se comio la cara) pasaba
+    el filtro de 2 mm y salia en la hoja: una tira que el laser corta pero que no se
+    puede levantar ni pegar. Batalla completa: 5 piezas en MainStreet y 1 en Merida."""
+
+    def _cfg(self):
+        from despiece import Config
+        return Config(escala=1, unidades_modelo='mm')      # a_mm = 1: el poly ya va en mm
+
+    def _marco(self, ancho, riel):
+        from shapely.geometry import Polygon, box
+        return Polygon(box(0, 0, ancho, 146).exterior.coords,
+                       [box(riel, riel, ancho - riel, 146 - riel).exterior.coords])
+
+    def test_marco_de_medio_mm_no_se_corta(self):
+        import estructura
+        placa = {'poly': self._marco(19, 0.5)}
+        self.assertFalse(estructura._cortable(placa, self._cfg()))
+        self.assertFalse(estructura._cortable_mm(placa['poly']))
+
+    def test_lo_que_ya_se_cortaba_se_sigue_cortando(self):
+        """Controles: el filtro nuevo no toca lo que antes pasaba con razon."""
+        import estructura
+        from shapely.geometry import box
+        cfg = self._cfg()
+        for nombre, poly in (('muro macizo', box(0, 0, 19, 146)),
+                             ('tira justo de 2 mm', box(0, 0, 2, 100)),
+                             ('marco de ventana, riel 1.35 mm (Merida M114)',
+                              self._marco(24.9, 1.35))):
+            with self.subTest(nombre):
+                self.assertTrue(estructura._cortable({'poly': poly}, cfg))
+                self.assertTrue(estructura._cortable_mm(poly))
+
+    def test_respeta_la_escala_del_modelo(self):
+        """El poly de la placa va en unidades del modelo (m): el ancho se mide en mm de maqueta."""
+        import estructura
+        from despiece import Config
+        marco = self._marco(19, 0.5)                       # mismos numeros, ahora en metros
+        # 1:1000 -> 1 m de modelo = 1 mm: el riel de 0.5 m son 0.5 mm, no se corta
+        self.assertFalse(estructura._cortable({'poly': marco}, Config(escala=1000)))
+        # 1:100 -> el riel de 0.5 m son 5 mm, se corta
+        self.assertTrue(estructura._cortable({'poly': marco}, Config(escala=100)))

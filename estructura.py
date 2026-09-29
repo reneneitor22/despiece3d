@@ -15,7 +15,16 @@ DIENTE_OBJ_MM = 12.0      # ancho buscado del diente, en mm de maqueta
 HOLGURA_MM = 0.06         # juego de la ranura
 MIN_LADO_MM = 2.0         # mm de maqueta: mas angosto que esto no se corta ni se pega
 MIN_AREA_MM2 = 20.0       # mm2 de maqueta: menos que esto es confeti
+MIN_ANCHO_MM = 1.0        # mm de maqueta: en algun punto de la pieza debe caber un disco asi
 MAX_PLACAS = 400          # arriba de esto ya no es maqueta escolar
+
+
+def _tiene_ancho(poly, mm_por_unidad):
+    """False si en NINGUN punto la pieza llega a MIN_ANCHO_MM de ancho. La caja
+    envolvente no lo ve: un marco de 19x146 mm con riel de 0.5 mm (un muro cuyo hueco
+    se comio la cara, MainStreet 1:500) pasa MIN_LADO_MM y sale en la hoja como una
+    tira que ni se levanta ni se pega. 0.99 deja pasar una tira de justo el minimo."""
+    return not poly.buffer(-0.5 * 0.99 * MIN_ANCHO_MM / mm_por_unidad).is_empty
 
 
 def _cortable_mm(poly):
@@ -24,7 +33,8 @@ def _cortable_mm(poly):
         return False
     minx, miny, maxx, maxy = poly.bounds
     return (min(maxx - minx, maxy - miny) >= MIN_LADO_MM
-            and poly.area >= MIN_AREA_MM2)
+            and poly.area >= MIN_AREA_MM2
+            and _tiene_ancho(poly, 1.0))
 
 
 def _cortable(placa, cfg):
@@ -34,7 +44,8 @@ def _cortable(placa, cfg):
         return False
     minx, miny, maxx, maxy = g.bounds
     lado = min(maxx - minx, maxy - miny) * cfg.a_mm
-    return lado >= MIN_LADO_MM and g.area * cfg.a_mm * cfg.a_mm >= MIN_AREA_MM2
+    return (lado >= MIN_LADO_MM and g.area * cfg.a_mm * cfg.a_mm >= MIN_AREA_MM2
+            and _tiene_ancho(g, cfg.a_mm))
 
 
 # ------------------------------------------------- escaleras, muebles y demas
