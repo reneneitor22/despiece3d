@@ -12,41 +12,28 @@ import shapely
 from shapely.geometry import Polygon
 
 from despiece import Config, cargar_modelo
-from placas import extraer_placas, nombrar, marcar_envolvente, cortar_por_piso
-from uniones import detectar_contactos, aplicar_uniones, recortar_choques
-from estructura import _cortable, MAX_PLACAS
+from estructura import despiece_estructural
 
 
 def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm=0.05,
-           tope_voxeles=25e6, tolerancia=0.005, solo_envolvente=False, piso=None):
+           tope_voxeles=25e6, tolerancia=0.005, solo_envolvente=False, piso=None,
+           con_uniones=True):
     cfg = Config(escala, carton_mm, 0.0, (600, 900), unidades_modelo=unidades)
     m = cargar_modelo(ruta)
-    # Las mismas placas que corta despiece_estructural: con un .ifc son SUS
-    # cuerpos y SUS tipos. Sin esto la prueba partia el IFC por conectividad y
-    # media otras piezas (FZK-Haus: 76 aqui contra 60 en la hoja, 27 sep 2026).
-    sem = m.metadata.get('semantica') or {}
-    placas, _ = extraer_placas(m, t_modelo=carton_mm / cfg.a_mm,
-                               preparado=(m, sem['cuerpos'], []) if sem.get('cuerpos') else None,
-                               tipos=sem.get('tipos'), superficies=not sem.get('cuerpos'))
-    # el mismo filtro que aplica el despiece: si una placa no se corta a esta
-    # escala, tampoco tiene por que aparecer en la prueba de ensamble
-    placas = [p for p in placas if _cortable(p, cfg)]
-    if piso is not None and placas:
-        placas, niveles, av = cortar_por_piso(placas, piso)
-        print('piso %d de %d' % (piso, len(niveles)) + ('  %s' % av if av else ''))
-    if solo_envolvente and placas:
-        marcar_envolvente(placas, m)
-        placas = [p for p in placas if p.get('exterior')]
-    if len(placas) > MAX_PLACAS:
-        placas.sort(key=lambda p: -p['area'])
-        placas = placas[:MAX_PLACAS]
-    nombrar(placas)
+    # Se arman LAS MISMAS placas que salen en la hoja: despiece_estructural y no
+    # una copia del pipeline. La copia armaba siempre con dientes y la app corta
+    # a tope de fabrica (28 sep): medía 0.04% en Engel mientras el alumno recibia
+    # 2.71% (28 sep 2026). Antes ya se habia desfasado con el IFC (27 sep).
+    _, info = despiece_estructural(m, cfg, con_uniones=con_uniones,
+                                   solo_envolvente=solo_envolvente, piso=piso,
+                                   grabar_planta=False)
+    if 'error' in info:
+        raise SystemExit(info['error'])
+    placas = info['placas']
     t_mod = carton_mm / cfg.a_mm
-    cont = detectar_contactos(placas, t_mod)
-    aplicar_uniones(placas, cont, t_mod, 12.0 / cfg.a_mm, 0.06 / cfg.a_mm)
-    nr, av = recortar_choques(placas, cont, t_mod)
-    print('recortes de choque: %d' % nr)
-    [print('   aviso:', a) for a in av]
+    print('%s | recortes de choque: %d' % ('con dientes' if con_uniones else 'a tope',
+                                           info['n_recortes']))
+    [print('   aviso:', a) for a in info['avisos']]
 
     lo, hi = m.bounds[0] - t_mod, m.bounds[1] + t_mod
     # Un edificio real a 1:100 son cientos de millones de voxeles a 0.4 mm y la
@@ -132,8 +119,8 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
 
     # piezas partidas por los cortes
     destruidas = [p['id'] for p in placas
-                  if p['poly_original'].area > 0
-                  and p['poly'].area < p['poly_original'].area * 0.5]
+                  if p.get('poly_original', p['poly']).area > 0
+                  and p['poly'].area < p.get('poly_original', p['poly']).area * 0.5]
     for pid in destruidas[:12]:
         print('   OJO %s perdio mas de la mitad del area al cortar uniones' % pid)
     if len(destruidas) > 12:
@@ -145,7 +132,7 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
              len(destruidas)))
     return {'ok': veredicto, 'frac': frac, 'choques': choques,
             'ocupados': ocupados, 'destruidas': destruidas, 'placas': len(placas),
-            'pares': pares, 'piezas': placas, 'contactos': cont, 't_mod': t_mod}
+            'pares': pares, 'piezas': placas, 'contactos': info['contactos'], 't_mod': t_mod}
 
 
 if __name__ == '__main__':
@@ -161,8 +148,9 @@ if __name__ == '__main__':
                     help='fraccion del material que puede quedar en choque (0.005 = 0.5%)')
     ap.add_argument('--solo-envolvente', action='store_true')
     ap.add_argument('--piso', type=int, default=None)
+    ap.add_argument('--a-tope', action='store_true', help='sin dientes, como sale de fabrica')
     a = ap.parse_args()
     r = probar(a.modelo, escala=a.escala, carton_mm=a.espesor, paso_mm=a.paso,
                unidades=a.unidades, tope_voxeles=a.tope_voxeles, tolerancia=a.tolerancia,
-               solo_envolvente=a.solo_envolvente, piso=a.piso)
+               solo_envolvente=a.solo_envolvente, piso=a.piso, con_uniones=not a.a_tope)
     sys.exit(0 if r['ok'] else 1)

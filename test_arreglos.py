@@ -925,3 +925,121 @@ class ATopeDeFabrica(Base):
         self.assertTrue(r['uniones_pedidas'])
         self.assertGreater(r['n_uniones'], 0)
         self.assertIn('por los dientes', guia)
+
+
+class ATopeArma(Base):
+    """28 sep (noche): a tope de fabrica salia SIN recortar_choques --vivia dentro
+    del `if con_uniones`--, y verificar_casa armaba siempre con dientes, asi que
+    nadie lo vio. FZK a 1:200: 3.64% de interferencia; Engel a 1:100: 2.71%."""
+
+    def test_a_tope_no_choca_al_armar(self):
+        import verificar_casa
+        stl = self.ruta('casa.stl')
+        _dos_pisos().export(stl)
+        # a 1:200 el carton de 2 mm mide 0.4 m de modelo: el doble que la losa
+        v = verificar_casa.probar(stl, escala=200, con_uniones=False)
+        self.assertTrue(v['ok'], 'interferencia %.2f%%' % (100 * v['frac']))
+
+    def test_verificar_arma_lo_que_se_corta(self):
+        """La prueba de ensamble no puede armar otra maqueta que la de la hoja."""
+        import estructura
+        import verificar_casa
+        stl = self.ruta('casa.stl')
+        _dos_pisos().export(stl)
+        for dientes in (False, True):
+            with mock.patch.object(estructura, 'despiece_estructural',
+                                   wraps=estructura.despiece_estructural) as de, \
+                    mock.patch.object(verificar_casa, 'despiece_estructural', de):
+                verificar_casa.probar(stl, escala=200, con_uniones=dientes)
+            self.assertEqual(de.call_args.kwargs['con_uniones'], dientes)
+
+    def test_a_tope_el_cruce_lleva_ranura_y_la_guia_lo_dice(self):
+        """Dos muros que se cruzan de orilla a orilla: a tope salen con media
+        ranura cada uno (recortar_choques) y la guia tiene que decir que se encajan."""
+        import app
+        stl = self.ruta('cruz.stl')
+        trimesh.util.concatenate([_caja(0, 0, 0, 10, 10, 0.2),
+                                  _caja(0, 4.9, 0.2, 10, 5.1, 3.0),
+                                  _caja(4.9, 0, 0.2, 5.1, 10, 3.0)]).export(stl)
+        carpeta = self.ruta('out')
+        os.makedirs(carpeta)
+        r = app._procesar(stl, {'unidades': 'm', 'modo': 'estructura', 'escala': '100'},
+                          carpeta, 'x' * 12, 'cruz', [])
+        self.assertFalse(r.get('error'), r.get('error'))
+        with open(os.path.join(carpeta, 'guia.html'), encoding='utf-8') as f:
+            self.assertIn('se encajan una en la otra', f.read())
+
+
+class NumeroDentroDeSuPieza(Base):
+    """28 sep: el numero de pieza (MARCADO) se medía con el ANCHO de la caja y se
+    ponía en representative_point sin ver si cabía: Merida 65 de 291 se salían de
+    su pieza; FZK un M12 de 6 mm sobre una tira de 3.1 mm. El laser marcaba encima
+    del corte."""
+
+    def test_numero_cabe_en_tiras_delgadas(self):
+        import ezdxf
+        import exportar
+        from despiece import Config
+        from shapely import affinity
+        from shapely.geometry import box
+        cfg = Config(100, 2.0, 0.0, (300, 200))
+        cols = [{'pieza': {'id': 'M12'}, 'geo': box(20, 20, 80, 23.1), 'guia': None},
+                {'pieza': {'id': 'M13'}, 'geo': box(100, 20, 103.1, 80), 'guia': None},
+                {'pieza': {'id': 'L4'}, 'geo': box(150, 20, 250, 120).difference(
+                    box(160, 30, 240, 110)), 'guia': None}]        # marco de 10 mm
+        ruta = self.ruta('h.dxf')
+        exportar.hoja_a_dxf(cols, cfg, ruta, 't')
+        textos = list(ezdxf.readfile(ruta).modelspace().query('TEXT[layer=="MARCADO"]'))
+        self.assertEqual(len(textos), 3)
+        for t, col in zip(textos, cols):
+            h = t.dxf.height
+            w = exportar.ANCHO_LETRA * h * len(t.dxf.text)
+            x, y = t.dxf.align_point.x, t.dxf.align_point.y
+            caja = affinity.rotate(box(x - w / 2, y - h / 2, x + w / 2, y + h / 2),
+                                   t.dxf.rotation, origin=(x, y))
+            self.assertTrue(col['geo'].contains(caja), '%s h=%.1f' % (t.dxf.text, h))
+            self.assertGreaterEqual(h, 2.0, t.dxf.text)       # que se pueda leer
+
+    def test_cajetin_no_pisa_el_numero(self):
+        import ezdxf
+        import exportar
+        from despiece import Config
+        from shapely.geometry import box
+        cfg = Config(100, 2.0, 0.0, (300, 200))
+        # la planta grabada ocupa la izquierda: el primer hueco libre para el
+        # cajetin cae encima del numero, que va al centro
+        cols = [{'pieza': {'id': 'L163', 'tipo': 'losa'}, 'geo': box(20, 20, 140, 45),
+                 'guia': box(20, 20, 50, 45)}]
+        ruta = self.ruta('c.dxf')
+        exportar.hoja_a_dxf(cols, cfg, ruta, 't', cajetin=['MAINSTREETPLACE', 'ESCALA 1:500'])
+        msp = ezdxf.readfile(ruta).modelspace()
+
+        def caja(t, centro):
+            h = t.dxf.height
+            w = exportar.ANCHO_LETRA * h * len(t.dxf.text)
+            p = t.dxf.align_point
+            return (box(p.x - w / 2, p.y - h / 2, p.x + w / 2, p.y + h / 2) if centro
+                    else box(p.x, p.y - h / 2, p.x + w, p.y + h / 2))
+        num = [caja(t, True) for t in msp.query('TEXT[layer=="MARCADO"]')]
+        caj = [caja(t, False) for t in msp.query('TEXT[layer=="GRABADO"]')]
+        self.assertTrue(caj, 'el cajetin cabe en la losa y no salio')
+        self.assertFalse(any(a.intersects(b) for a in caj for b in num))
+
+
+class CajetinUnaVez(Base):
+    def test_cajetin_solo_en_la_primera_hoja(self):
+        """Se grababa en TODAS las hojas: Gale lo traia en 15 capas del terreno."""
+        import app
+        import ezdxf
+        stl = self.ruta('casa.stl')
+        _dos_pisos().export(stl)
+        carpeta = self.ruta('out')
+        os.makedirs(carpeta)
+        r = app._procesar(stl, {'unidades': 'm', 'modo': 'estructura', 'escala': '50',
+                                'hoja': '297x420'}, carpeta, 'x' * 12, 'casa', [])
+        self.assertFalse(r.get('error'), r.get('error'))
+        dxfs = sorted(f for f in os.listdir(carpeta) if f.endswith('.dxf'))
+        self.assertGreater(len(dxfs), 1)
+        con = [f for f in dxfs if list(ezdxf.readfile(os.path.join(carpeta, f))
+                                       .modelspace().query('TEXT[layer=="GRABADO"]'))]
+        self.assertEqual(con, dxfs[:1])

@@ -114,6 +114,35 @@ def _anillos_de_corte(colocadas):
             for i in orden]
 
 
+# Ancho de una letra en alturas: la M de Helvetica mide 0.83, un digito 0.56. Se
+# toma de mas para que el numero de pieza nunca se salga de su pieza.
+ANCHO_LETRA = 0.75
+
+
+def _rotulo(geo, texto):
+    """(x, y, alto, giro) del numero de pieza: el punto MAS ADENTRO de la pieza
+    (polylabel, no representative_point, que cae pegado a los huecos) y la letra
+    mas grande que cabe entera ahi, derecha o girada 90 grados.
+
+    Antes el alto salia del ancho de la caja y nadie revisaba que cupiera: un M12
+    de 6 mm sobre una tira de 3.1 mm (FZK) y 65 de 291 fuera de su pieza (Merida).
+    DXF, SVG y PDF lo toman de aqui para decir lo mismo."""
+    from shapely.geometry import box as _box
+    from shapely.ops import polylabel
+    p = geo if geo.geom_type == 'Polygon' else max(geo.geoms, key=lambda g: g.area)
+    c = polylabel(p, tolerance=0.1)
+    x, y = c.x, c.y
+    dentro = p.buffer(-0.3)                      # que no pise el corte
+    tope = max(2.5, min(6.0, (p.bounds[2] - p.bounds[0]) / 8.0))
+    n = max(1, len(str(texto)))
+    for alto in [a for a in (6.0, 5.0, 4.0, 3.5, 3.0, 2.5, 2.0, 1.5) if a <= tope]:
+        w = ANCHO_LETRA * alto * n
+        for giro, (bw, bh) in ((0, (w, alto)), (90, (alto, w))):
+            if dentro.contains(_box(x - bw / 2, y - bh / 2, x + bw / 2, y + bh / 2)):
+                return x, y, alto, giro
+    return x, y, 1.5, 0 if p.bounds[2] - p.bounds[0] >= p.bounds[3] - p.bounds[1] else 90
+
+
 def _xml(txt):
     """Un nombre de proyecto con & o < rompe el SVG en silencio."""
     return (str(txt).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
@@ -227,13 +256,18 @@ def _hueco_para_texto(col, ancho, alto, paso=3.0):
     if x1 - x0 < ancho or y1 - y0 < alto:
         return None
     guia = col.get('guia')
+    # ni encima del numero de pieza: grabado sobre marcado no se lee ninguno
+    nx, ny, nh, giro = _rotulo(g, col['pieza']['id'])
+    nw = ANCHO_LETRA * nh * len(str(col['pieza']['id']))
+    nw, nh = (nw, nh) if giro == 0 else (nh, nw)
+    numero = _box(nx - nw / 2 - 1, ny - nh / 2 - 1, nx + nw / 2 + 1, ny + nh / 2 + 1)
     y = y0
     while y + alto <= y1:
         x = x0
         while x + ancho <= x1:
             caja = _box(x, y, x + ancho, y + alto)
-            if dentro.contains(caja) and (guia is None or guia.is_empty
-                                          or not guia.intersects(caja)):
+            if (dentro.contains(caja) and not numero.intersects(caja)
+                    and (guia is None or guia.is_empty or not guia.intersects(caja))):
                 return (x, y)
             x += paso
         y += paso
@@ -250,7 +284,7 @@ def _cajetin(msp, colocadas, lineas, capa, alto=3.2):
     lineas = [str(x) for x in lineas if str(x).strip()]
     if not lineas:
         return None
-    ancho = 0.62 * alto * max(len(x) for x in lineas)
+    ancho = ANCHO_LETRA * alto * max(len(x) for x in lineas)
     total = alto * 1.7 * len(lineas)
     for col in sorted(colocadas, key=lambda c: (c['pieza'].get('tipo') != 'losa',
                                                 -c['geo'].area)):
@@ -330,14 +364,12 @@ def hoja_a_dxf(colocadas, cfg, ruta, titulo, ops=None, ficha=None, marco=True,
                 for r in ints:
                     msp.add_lwpolyline(r, close=True, dxfattribs={'layer': L_GRAB})
 
-        g = col['geo']
-        cx, cy = g.representative_point().x, g.representative_point().y
-        alto = max(2.5, min(6.0, (g.bounds[2] - g.bounds[0]) / 8.0))
+        cx, cy, alto, giro = _rotulo(col['geo'], pz['id'])
         # El numero de pieza es MARCADO, no grabado: es lo que el alumno lee
         # para armar, no relieve. Separarlo deja que el taller lo corra a menos
         # potencia o lo apague sin tocar las huellas de ensamble.
         msp.add_text(pz['id'],
-                     dxfattribs={'layer': L_MARCA, 'height': alto}
+                     dxfattribs={'layer': L_MARCA, 'height': alto, 'rotation': giro}
                      ).set_placement((cx, cy), align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER)
 
     # Marco y rotulo de cada zona. Van en la capa HOJA: se ven al abrir el plano
@@ -420,16 +452,15 @@ def hoja_a_svg(colocadas, cfg, titulo, rotulo_zona='%s', notas=None,
         if col['guia'] is not None:
             path_de([r for ext, ints in _anillos(col['guia']) for r in [ext] + ints],
                     '#2563eb', 0.25, punteado=True)
-        rp = g.representative_point()
-        etiquetas.append((rp.x, rp.y, _xml(pz['id']),
-                          max(2.5, min(6.0, (g.bounds[2] - g.bounds[0]) / 8.0))))
+        x, y, alto, giro = _rotulo(g, pz['id'])
+        etiquetas.append((x, y, _xml(pz['id']), alto, 'middle', giro))
     for anillos in _anillos_de_corte(colocadas):
         path_de(anillos, '#e11d48', 0.35)
 
     if cajetin:
         lineas = [str(x) for x in cajetin if str(x).strip()]
         alto = 3.2
-        ancho = 0.62 * alto * max(len(x) for x in lineas) if lineas else 0
+        ancho = ANCHO_LETRA * alto * max(len(x) for x in lineas) if lineas else 0
         total = alto * 1.7 * len(lineas)
         for col in sorted(colocadas, key=lambda c: (c['pieza'].get('tipo') != 'losa',
                                                     -c['geo'].area)):
@@ -452,9 +483,11 @@ def hoja_a_svg(colocadas, cfg, titulo, rotulo_zona='%s', notas=None,
     for et in etiquetas:
         x, y, txt, h = et[:4]
         anclaje = et[4] if len(et) > 4 else 'middle'
+        giro = (' transform="rotate(%d %.3f %.3f)"' % (-et[5], x, Ht - y)
+                if len(et) > 5 and et[5] else '')
         p.append('<text x="%.3f" y="%.3f" font-family="Helvetica,Arial" font-size="%.2f" '
-                 'fill="#111" text-anchor="%s" dominant-baseline="central">%s</text>'
-                 % (x, Ht - y, h, anclaje, txt))
+                 'fill="#111" text-anchor="%s" dominant-baseline="central"%s>%s</text>'
+                 % (x, Ht - y, h, anclaje, giro, txt))
     for i, nota in enumerate(notas):
         p.append('<text x="0" y="%.2f" font-family="Helvetica,Arial" font-size="4.5" '
                  'fill="#555">%s</text>' % (Ht - (H + 6 + 7.0 * (len(notas) - 1 - i)),
@@ -689,15 +722,16 @@ def hojas_a_pdf(hojas, cfg, ruta, titulo_base):
                         trazo(anillo)
                 c.setDash()
 
-            g = col['geo']
-            rp = g.representative_point()
-            alto = max(2.5, min(6.0, (g.bounds[2] - g.bounds[0]) / 8.0))
+            x, y, alto, giro = _rotulo(col['geo'], col['pieza']['id'])
             c.setFillColorRGB(0.07, 0.07, 0.09)
             c.setFont('Helvetica', alto * MM)
             # drawCentredString pone la linea base; se baja media altura para
             # que el numero quede centrado en la pieza y no encima del borde.
-            c.drawCentredString(rp.x * MM, (rp.y * MM) - alto * MM * 0.36,
-                                str(col['pieza']['id']))
+            c.saveState()
+            c.translate(x * MM, y * MM)
+            c.rotate(giro)
+            c.drawCentredString(0, -alto * MM * 0.36, str(col['pieza']['id']))
+            c.restoreState()
 
         c.setStrokeColorRGB(0.88, 0.11, 0.28)              # corte
         for anillos in _anillos_de_corte(colocadas):

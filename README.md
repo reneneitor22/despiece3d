@@ -303,6 +303,7 @@ python3 prueba_fbx.py                     # que el FBX entre en metros y Z arrib
 
 # tambien con modelos de verdad
 python3 verificar_casa.py casa.obj 100 --espesor 2
+python3 verificar_casa.py casa.obj 100 --espesor 2 --a-tope   # como sale de fabrica
 python3 verificar.py terreno.stl --escala 100 --espesor 3 --hoja 500x700
 ```
 
@@ -315,7 +316,10 @@ muestreo cuando el modelo es grande: un edificio a 1:100 son 430 millones de vó
 a 0.4 mm.
 
 `verificar_casa.py` reconstruye en 3D las piezas ya cortadas y busca pares que ocupen
-el mismo volumen. Si dos piezas chocan, la maqueta no cierra por más bonito que se vea
+el mismo volumen. Arma lo que sale de `despiece_estructural`, no una copia del
+pipeline: la copia armaba siempre con dientes y no vio que a tope (lo de fabrica desde
+el 28 sep) se saltaba `recortar_choques` --FZK a 1:200 salia con 3.64%, Engel con
+2.71%--. Ya corre en los dos modos; a tope Engel da 0.02% y FZK 0.00%. Si dos piezas chocan, la maqueta no cierra por más bonito que se vea
 el DXF. Medición actual sobre la casa de prueba a 1:100 con cartón de 2 mm:
 
 | | |

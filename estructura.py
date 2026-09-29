@@ -325,8 +325,13 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
         n_uniones = aplicar_uniones(placas, contactos, t_mod,
                                     diente_obj=DIENTE_OBJ_MM / cfg.a_mm,
                                     holgura_modelo=HOLGURA_MM / cfg.a_mm)
-        dbg.marcar('recortar_choques')
-        n_recortes, avisos_recorte = recortar_choques(placas, contactos, t_mod)
+    else:
+        for p in placas:                  # el tope de "menos de la mitad" mide contra esto
+            p['poly_original'] = p['poly']
+    # Con dientes o a tope: dos placas que ocupan el mismo volumen no arman. A tope
+    # esto vivia dentro del `if` y no corria (FZK 1:200: 3.64%, Engel: 2.71%, 28 sep).
+    dbg.marcar('recortar_choques')
+    n_recortes, avisos_recorte = recortar_choques(placas, contactos, t_mod)
 
     # Escaleras, barandales y muebles no son laminas y placas.py los descarta.
     # Para maqueta la salida es laminarlos: rebanadas horizontales que se apilan.

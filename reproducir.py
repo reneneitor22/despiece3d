@@ -77,5 +77,6 @@ if __name__ == '__main__':
         v = verificar_casa.probar(ruta, escala=r['escala'], carton_mm=r['espesor'],
                                   unidades=r['unidades'],
                                   solo_envolvente=c.get('envolvente') in ('1', 'true', 'on'),
-                                  piso=int(piso) if piso.isdigit() and int(piso) > 0 else None)
+                                  piso=int(piso) if piso.isdigit() and int(piso) > 0 else None,
+                                  con_uniones=bool(r.get('uniones_pedidas')))
         sys.exit(0 if v['ok'] else 1)

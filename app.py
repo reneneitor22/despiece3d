@@ -965,12 +965,15 @@ def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
         titulo = '%s  hoja %d/%d  1:%d  lamina %.1fmm' % (nombre, i + 1, len(hojas), int(escala), espesor)
         dxf = os.path.join(carpeta, '%s_hoja%02d.dxf' % (nombre, i + 1))
         with dbg.etapa('export.hoja', i=i + 1, piezas=len(colocadas)):
+            # El cajetin va UNA vez, en la primera hoja: grabado en cada una salia
+            # en 15 capas del terreno (Gale, 28 sep 2026).
             exportar.hoja_a_dxf(colocadas, cfg, dxf, titulo, ops=ops, marco=con_marco,
                                 ficha=_ficha(nombre, cfg, material, i + 1, len(hojas),
                                              len(colocadas)) if con_tabla else None,
-                                capa_hoja=capa_hoja, notas=notas, cajetin=cajetin)
+                                capa_hoja=capa_hoja, notas=notas,
+                                cajetin=cajetin if i == 0 else None)
             svg = exportar.hoja_a_svg(colocadas, cfg, titulo, notas=notas,
-                                      cajetin=cajetin)
+                                      cajetin=cajetin if i == 0 else None)
         dxfs.append(dxf)
         svgs.append(svg)
         open(os.path.join(carpeta, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w', encoding='utf-8').write(svg)
@@ -1123,11 +1126,14 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
         ficha = _ficha(nombre, cfg, material, i + 1, len(hojas), len(col))
         if len(zonas) > 1 or n_plantas > 1:
             ficha.insert(2, ('Zona', ', '.join(zonas)))
+        # una vez por maqueta, en la primera hoja (la planta baja): ver modo terreno
         exportar.hoja_a_dxf(col, cfg, dxf, tit, ops=ops, marco=con_marco,
                             ficha=ficha if con_tabla else None,
-                            capa_hoja=capa_hoja, notas=notas, cajetin=cajetin)
+                            capa_hoja=capa_hoja, notas=notas,
+                            cajetin=cajetin if i == 0 else None)
         dxfs.append(dxf)
-        svg = exportar.hoja_a_svg(col, cfg, tit, notas=notas, cajetin=cajetin)
+        svg = exportar.hoja_a_svg(col, cfg, tit, notas=notas,
+                                  cajetin=cajetin if i == 0 else None)
         svgs.append(svg)
         open(os.path.join(carpeta, '%s_hoja%02d.svg' % (nombre, i + 1)), 'w', encoding='utf-8').write(svg)
         area += sum(c['geo'].area for c in col)
@@ -1335,7 +1341,7 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
   <label><input type="radio" name="modo" value="estructura" checked><span>Casa / edificio</span></label>
   <label><input type="radio" name="modo" value="curvas"><span>Terreno / topografía</span></label>
  </div>
- <p class="pista" id="pista">Muros, losas y techos como placas, con dientes para que ensamble sola.
+ <p class="pista" id="pista">Muros, losas y techos como placas que arman a tope, sin choques entre ellas.
   El modelo debe traer los muros con <b>espesor</b>, no como caras sueltas.</p>
  <div class="drop" id="drop">
   <b id="dropTxt">Arrastra tu modelo aquí</b>
@@ -1628,7 +1634,7 @@ function pintarModo(){
   $('espesorSel').dispatchEvent(new Event('change'));
   $('escala').value=est?100:200;
   $('pista').innerHTML=est
-    ? 'Muros, losas y techos como placas, con dientes para que ensamble sola. '+
+    ? 'Muros, losas y techos como placas que arman a tope, sin choques entre ellas. '+
       'El modelo debe traer los muros con <b>espesor</b>, no como caras sueltas.'
     : 'Rebanadas horizontales apiladas, como curvas de nivel. '+
       'Sirve con una superficie de terreno aunque esté abierta.';

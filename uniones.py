@@ -670,6 +670,7 @@ def _media_y_media(datos, tramos, d, t, max_perdida):
         if len(hechos) == 2:
             for P, nuevo in hechos:
                 P['poly'] = nuevo
+                P['n_ranuras'] = P.get('n_ranuras', 0) + 1
             return True
     return False
 
@@ -750,7 +751,9 @@ def recortar_choques(placas, contactos, t_placa_modelo, max_perdida=0.25):
                 avisos.append('%s y %s se enciman y no se pudo recortar ninguna (%s)'
                               % (A.get('id', '?'), B.get('id', '?'), '; '.join(motivos)))
                 continue
-            _, P, nuevo = min(opciones, key=lambda x: x[0])
+            (sigue, _), P, nuevo = min(opciones, key=lambda x: x[0])
             P['poly'] = nuevo
+            if sigue:                             # no termina ahi: es ranura, no recorte
+                P['n_ranuras'] = P.get('n_ranuras', 0) + 1
             hechos += 1
     return hechos, avisos
