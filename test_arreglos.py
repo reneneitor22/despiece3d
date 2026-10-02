@@ -706,14 +706,14 @@ class Revision24Sep(Base):
         with open(ruta, 'wb') as f:
             f.write(b'no importa, se lee con _abrir falso')
         caja = trimesh.creation.box(extents=(4, 3, 2))
-        # openskp entrega Y arriba: se le da asi para que salga igual que la caja
-        pos = np.column_stack((caja.vertices[:, 0], caja.vertices[:, 2], -caja.vertices[:, 1]))
-        escena = types.SimpleNamespace(glb_primitives=[types.SimpleNamespace(
-            positions=pos.ravel().tolist(), indices=caja.faces.ravel().tolist())])
-        falso = types.SimpleNamespace(build_scene=lambda: escena)
+        # _hornear ya entrega metros y Z arriba (1 oct 2026: antes era build_scene)
+        prims = [(np.asarray(caja.vertices, dtype=np.float64), np.asarray(caja.faces), 'Layer0', 'ROOT', ())]
+        falso = types.SimpleNamespace(path=ruta)
         with mock.patch.object(skp, 'CACHE', self.tmp), \
-                mock.patch.object(skp, '_abrir', return_value=falso):
-            guardada = os.path.join(self.tmp, 'casa-%s.ply' % skp._firma(ruta))
+                mock.patch.object(skp, '_abrir', return_value=falso), \
+                mock.patch('openskp._core.full_parse', return_value={}), \
+                mock.patch.object(skp, '_hornear', return_value=prims):
+            guardada = os.path.join(self.tmp, 'casa-%s-v2.ply' % skp._firma(ruta))
             with open(guardada, 'wb') as f:
                 f.write(b'ply\nformat binary_little_endian 1.0\nelement vertex 99\n')
             m = skp.cargar_skp(ruta, avisar=False)
@@ -1088,3 +1088,295 @@ class AnchoUtil(Base):
         self.assertFalse(estructura._cortable({'poly': marco}, Config(escala=1000)))
         # 1:100 -> el riel de 0.5 m son 5 mm, se corta
         self.assertTrue(estructura._cortable({'poly': marco}, Config(escala=100)))
+
+
+class HornearDaLoMismo(Base):
+    """1 oct 2026: el SKP de Irving (137 MB) tardaba 31 min en build_scene de
+    openskp, que retriangulaba cada instancia, recorria mesh_index entero por
+    cada una y buscaba vertices a fuerza bruta. skp._hornear y skp._triangular
+    tienen que dar la MISMA malla, bit a bit."""
+
+    def _skp(self):
+        from openskp.create import SkpBuilder
+
+        def caja(d, x0, y0, z0, x1, y1, z1, **kw):
+            P = lambda x, y, z: (float(x), float(y), float(z))
+            a, b, c, e = P(x0, y0, z0), P(x1, y0, z0), P(x1, y1, z0), P(x0, y1, z0)
+            f, g, h, i = P(x0, y0, z1), P(x1, y0, z1), P(x1, y1, z1), P(x0, y1, z1)
+            for cara in ([a, e, c, b], [f, g, h, i], [a, b, g, f], [b, c, h, g], [c, e, i, h], [e, a, f, i]):
+                d.add_face(cara, **kw)
+
+        b = SkpBuilder()
+        rojo = b.add_material('rojo', (200, 30, 30, 255))
+        azul = b.add_material('azul', (30, 30, 200, 255))
+        muros = b.add_layer('Muros')
+        muebles = b.add_layer('Muebles', color=(10, 200, 10))
+        with b.add_component_definition('Silla') as silla:
+            caja(silla, 0, 0, 0, 18, 18, 18, material=rojo, back_material=azul)   # cara y dorso distintos
+            silla.add_face([(0.0, 0.0, 18.0), (18.0, 0.0, 18.0), (18.0, 0.0, 36.0),
+                            (9.0, 0.0, 40.0), (0.0, 0.0, 36.0)])                    # 5 lados: Delaunay
+        with b.add_component_definition('Mesa') as mesa:
+            caja(mesa, 0, 0, 28, 60, 40, 30)
+            for k in range(4):                                                     # anidadas y giradas
+                mesa.add_instance(silla, translation=(-20.0 + 30 * k, -25.0, 0.0), rotation=((0, 0, 1), k * 0.7))
+        caja(b, 0, 0, 0, 400, 8, 110, layer=muros)
+        caja(b, 0, 300, 0, 400, 308, 110, layer=muros, material=azul)
+        for k in range(5):                    # color heredado distinto por instancia
+            b.add_instance(mesa, translation=(40.0 + 70 * k, 120.0, 0.0), layer=muebles,
+                           material=rojo if k % 2 else None, rotation=((0, 0, 1), 0.3 * k))
+        b.add_instance(silla, translation=(10.0, 200.0, 0.0), matrix3x3=(2.0, 0, 0, 0, 1.5, 0, 0, 0, 1.0))
+        ruta = self.ruta('sint.skp')
+        b.save(ruta)
+        return ruta
+
+    @staticmethod
+    def _juntar(prims):
+        V, F, base = [], [], 0
+        for v, f in prims:
+            if v.size < 9 or f.size < 3:
+                continue
+            V.append(v)
+            F.append(f + base)
+            base += len(v)
+        return np.vstack(V), np.vstack(F)
+
+    def _openskp(self, parsed):
+        from openskp import scene as S
+        prims = []
+        for prim in S.build_scene(parsed).glb_primitives:
+            p = np.asarray(prim.positions, dtype=np.float64).reshape(-1, 3)
+            prims.append((np.column_stack((p[:, 0], -p[:, 2], p[:, 1])),
+                          np.asarray(prim.indices, dtype=np.int64).reshape(-1, 3)))
+        return self._juntar(prims)
+
+    def test_misma_malla_que_openskp(self):
+        import skp
+        from openskp import _core
+        parsed = _core.full_parse(self._skp())
+        V0, F0 = self._openskp(parsed)
+        V1, F1 = self._juntar((v, f) for v, f, *_ in skp._hornear(parsed))
+        self.assertGreater(len(F0), 500)
+        self.assertTrue(np.array_equal(V0, V1))
+        self.assertTrue(np.array_equal(F0, F1))
+        # control: sin el dorso de las caras de dos colores ya no es igual
+        from openskp import scene as S
+        orig = S._add_face_side
+        with mock.patch.object(S, '_add_face_side',
+                               lambda g, b, t, fn, c, ds, rev, *a: None if rev else orig(g, b, t, fn, c, ds, rev, *a)):
+            V2, F2 = self._juntar((v, f) for v, f, *_ in skp._hornear(parsed))
+        self.assertNotEqual(len(F2), len(F0))
+
+    def test_capa_de_cada_pieza(self):
+        import skp
+        from openskp import _core
+        # la etiqueta de la INSTANCIA (layer_id en el .skp viejo, que openskp no
+        # lee); la de una cara suelta openskp no la expone: los muros quedan Layer0
+        capas = {c for _, _, c, *_ in skp._hornear(_core.full_parse(self._skp()))}
+        self.assertEqual(capas, {'Muebles', 'Layer0'})
+
+    def test_triangular_igual_a_openskp(self):
+        """Caras con muchos vertices, huecos, puntos repetidos y colineales."""
+        import skp
+        from openskp import _core
+        rnd = random.Random(7)
+        casos = []
+        for n in (5, 12, 60, 300):
+            ang = sorted(rnd.uniform(0, 2 * math.pi) for _ in range(n))
+            verts = {i: (math.cos(a) * rnd.uniform(5, 10), math.sin(a) * rnd.uniform(5, 10), 3.0)
+                     for i, a in enumerate(ang)}
+            loops = [list(range(n))]
+            if n >= 60:     # un hueco cuadrado
+                base = len(verts)
+                for j, (x, y) in enumerate([(-1, -1), (-1, 1), (1, 1), (1, -1)]):
+                    verts[base + j] = (x, y, 3.0)
+                loops.append([base, base + 1, base + 2, base + 3])
+            casos.append((verts, loops, (0, 0, 1)))
+        # dos ids en la misma coordenada: gana el primero, como en openskp
+        verts = {0: (0.0, 0.0, 0.0), 1: (4.0, 0.0, 0.0), 2: (4.0, 4.0, 0.0), 3: (2.0, 5.0, 0.0),
+                 4: (0.0, 4.0, 0.0), 5: (4.0, 0.0, 0.0)}
+        casos.append((verts, [[0, 1, 2, 3, 4], [5, 2, 3]], (0, 0, 1)))
+        # cara inclinada con colineales
+        verts = {i: (float(i), 0.0, float(i % 3)) for i in range(8)}
+        verts.update({8: (7.0, 5.0, 1.0), 9: (0.0, 5.0, 1.0)})
+        casos.append((verts, [list(range(10))], (0, -1, 0)))
+        for verts, loops, normal in casos:
+            self.assertEqual(skp._triangular(verts, loops, normal),
+                             _core.triangulate_face_3d(verts, loops, normal))
+
+
+class QuitarDetalle(Base):
+    """1 oct 2026: de las 7.2 M caras del SKP de Irving, 7.03 M eran escenario,
+    guitarras, mesas de bar y bocinas. Se quitan por densidad (triangulos/m2)."""
+
+    @staticmethod
+    def _prim(m, ruta, nodos, mover=(0, 0, 0)):
+        return (np.asarray(m.vertices, dtype=np.float64) + mover, np.asarray(m.faces, dtype=np.int64),
+                'Layer0', ruta, nodos)
+
+    def _escena(self, escala=1.0):
+        muro = trimesh.creation.box(extents=(10 * escala, 0.2 * escala, 3 * escala))      # ~1/m2
+        piso = trimesh.creation.box(extents=(6 * escala, 4 * escala, 0.3 * escala))
+        guitarra = trimesh.creation.icosphere(subdivisions=4, radius=0.3 * escala)       # ~4500/m2
+        return [self._prim(muro, 'ROOT', ()),
+                self._prim(muro, 'ROOT / Muro', (1,), (0, 5 * escala, 0)),
+                # escenario: el piso es ralo, las guitarras no -> se decide por hijo
+                self._prim(piso, 'ROOT / Escenario', (2,)),
+                self._prim(guitarra, 'ROOT / Escenario / Guitarra', (2, 3), (1, 1, 1)),
+                self._prim(guitarra, 'ROOT / Escenario / Guitarra', (2, 4), (2, 1, 1)),
+                # mesa de bar: densa entera, se va con todo y su tabla rala
+                self._prim(guitarra, 'ROOT / Mesa de Bar', (5,), (5, 1, 1)),
+                self._prim(trimesh.creation.box(extents=(0.6 * escala, 0.6 * escala, 0.03 * escala)),
+                           'ROOT / Mesa de Bar / Tabla', (5, 6), (5, 1, 2))]
+
+    def test_quita_lo_denso_y_deja_lo_ralo(self):
+        import skp
+        prims = self._escena()
+        quedan, r = skp._quitar_detalle(prims)
+        self.assertEqual([p[3] for p in quedan], ['ROOT', 'ROOT / Muro', 'ROOT / Escenario'])
+        self.assertEqual(r['nombres'], {'Guitarra': 2, 'Mesa de Bar': 1})
+        self.assertEqual(r['caras'], 3 * len(prims[3][1]) + len(prims[6][1]))
+        aviso = skp._aviso_detalle(r, 36)
+        self.assertIn('Guitarra x2', aviso)
+        self.assertIn('Mesa de Bar', aviso)
+
+    def test_modelo_a_escala_equivocada_no_se_toca(self):
+        """Todo a 1/100 de su tamaño: todo se ve denso, se iria casi toda el area.
+        Mejor no quitar nada (el aviso de escala de app.py se encarga)."""
+        import skp
+        prims = self._escena(escala=0.01)
+        quedan, r = skp._quitar_detalle(prims)
+        self.assertIsNone(r)
+        self.assertEqual(len(quedan), len(prims))
+
+    def test_cargar_skp_quita_y_avisa(self):
+        import skp
+        from openskp.create import SkpBuilder
+        b = SkpBuilder()
+        bola = trimesh.creation.icosphere(subdivisions=3, radius=6.0)      # pulgadas: 15 cm, ~10 mil/m2
+        with b.add_component_definition('Lampara') as lamp:
+            for f in bola.faces:
+                lamp.add_face([tuple(map(float, bola.vertices[i])) for i in f])
+        P = lambda x, y, z: (float(x), float(y), float(z))
+        for x0 in (0, 300):                                                 # dos muros de 8 m
+            a, c, d, e = P(x0, 0, 0), P(x0, 315, 0), P(x0, 315, 110), P(x0, 0, 110)
+            b.add_face([a, c, d, e])
+        for k in range(3):
+            b.add_instance(lamp, translation=(100.0 + 40 * k, 100.0, 90.0))
+        ruta = self.ruta('casa.skp')
+        b.save(ruta)
+        m = skp.cargar_skp(ruta, usar_cache=False, avisar=False)
+        self.assertEqual(len(m.faces), 4)                                   # los muros, sin lamparas
+        self.assertIn('Lampara x3', m.metadata['despiece_avisos'][0])
+        with mock.patch.object(skp, 'DENSO', 1e12):                         # control
+            self.assertEqual(len(skp.cargar_skp(ruta, usar_cache=False, avisar=False).faces),
+                             4 + 3 * len(bola.faces))
+
+
+def _terreno(ancho=60.0, largo=45.0, n=40):
+    """Un TIN de ladera: lo que da Google Earth o el Sandbox de SketchUp."""
+    xs, ys = np.linspace(0, ancho, n), np.linspace(0, largo, int(n * largo / ancho))
+    X, Y = np.meshgrid(xs, ys)
+    Z = 3 * np.sin(X / 10.0) + 2 * np.cos(Y / 8.0) + X / 12.0
+    v = np.column_stack((X.ravel(), Y.ravel(), Z.ravel()))
+    w = len(xs)
+    f = []
+    for j in range(len(ys) - 1):
+        for i in range(w - 1):
+            a, b, c, d = j * w + i, j * w + i + 1, (j + 1) * w + i + 1, (j + 1) * w + i
+            f += [(a, b, c), (a, c, d)]
+    return trimesh.Trimesh(v, np.array(f), process=False)
+
+
+def _plano(x0, y0, x1, y1, z):
+    return trimesh.Trimesh([(x0, y0, z), (x1, y0, z), (x1, y1, z), (x0, y1, z)],
+                           [(0, 1, 2), (0, 2, 3)], process=False)
+
+
+class PlanosYTerreno(Base):
+    """1 oct 2026, SKP de Irving: 31 planos de 179x144 m (uno por metro, para sacar
+    curvas) + la foto de geolocalizacion se cortaban como losas (114 hojas), y el
+    terreno en modo casa salia en cientos de facetas dentadas."""
+
+    def _casa(self):
+        # sobre la ladera, en su punto mas alto, para que no la atraviese
+        return _caja(25, 18, 9.0, 35, 26, 15.0)
+
+    def test_planos_apilados_y_foto_se_van(self):
+        from despiece import quitar_planos_auxiliares
+        ter = _terreno()
+        partes = [ter, self._casa()] + [_plano(-10, -10, 70, 55, z) for z in (1.0, 2.0, 3.0)] \
+            + [_plano(0, 0, 60, 45, 0.0)]                       # la foto, del tamaño del terreno
+        m = trimesh.util.concatenate(partes)
+        m.merge_vertices()
+        m = quitar_planos_auxiliares(m)
+        self.assertEqual(len(m.faces), len(ter.faces) + 12)
+        self.assertIn('quitamos 4 plano(s) auxiliar(es)', m.metadata['despiece_avisos'][0])
+
+    def test_un_piso_suelto_se_queda(self):
+        """La plaza de la Iglesia de la Luz: un solo plano que le gana al edificio
+        por todos lados puede ser la base. Dos iguales apilados, no."""
+        from despiece import quitar_planos_auxiliares
+        casa = self._casa()
+        m = trimesh.util.concatenate([casa, _plano(0, 0, 60, 45, 9.0)])
+        self.assertEqual(len(quitar_planos_auxiliares(m).faces), len(casa.faces) + 2)
+        m = trimesh.util.concatenate([casa, _plano(0, 0, 60, 45, 9.0), _plano(0, 0, 60, 45, 7.0)])
+        self.assertEqual(len(quitar_planos_auxiliares(m).faces), len(casa.faces))
+
+    def test_detecta_el_terreno_y_no_la_casa(self):
+        from despiece import detectar_terreno
+        ter = _terreno()
+        m = trimesh.util.concatenate([ter, self._casa()])
+        mask = detectar_terreno(m)
+        self.assertEqual(int(mask.sum()), len(ter.faces))
+        self.assertTrue(mask[:len(ter.faces)].all())
+        self.assertIsNone(detectar_terreno(self._casa()))
+        # un techo plegado arriba de la casa no es terreno aunque mire arriba
+        techo = _terreno(12, 10, 14)
+        techo.apply_translation((24, 17, 15))
+        self.assertIsNone(detectar_terreno(trimesh.util.concatenate([self._casa(), techo])))
+        # puro terreno: todo
+        self.assertTrue(detectar_terreno(ter).all())
+
+    def test_casa_con_terreno_sale_en_placas_y_curvas(self):
+        import app
+        stl = self.ruta('sitio.stl')
+        trimesh.util.concatenate([_terreno(), self._casa()]).export(stl)
+        carpeta = self.ruta('out')
+        os.makedirs(carpeta)
+        avisos = []
+        r = app._procesar(stl, {'unidades': 'm', 'modo': 'estructura', 'escala': '200', 'espesor': '3',
+                                'hoja': '1000x780'}, carpeta, 'y' * 12, 'sitio', avisos)
+        self.assertFalse(r.get('error'), r.get('error'))
+        self.assertTrue(any('separamos el terreno' in a for a in r['avisos']))
+        archivos = [a['nombre'] for a in r['archivos']]
+        self.assertTrue(any(n.startswith('sitio terreno_hoja') for n in archivos), archivos)
+        self.assertTrue(any(n.startswith('sitio_hoja') for n in archivos), archivos)
+        self.assertEqual(r['stats']['n_hojas'], r['terreno']['n_hojas'] + len(
+            [n for n in archivos if n.startswith('sitio_hoja') and n.endswith('.dxf')]))
+        zips = [f for f in os.listdir(carpeta) if f.endswith('_despiece.zip')]
+        self.assertEqual(zips, ['sitio_despiece.zip'])
+        with zipfile.ZipFile(os.path.join(carpeta, zips[0])) as z:
+            self.assertTrue(any(n.startswith('sitio terreno_hoja') for n in z.namelist()))
+
+    def test_recorte_del_terreno_queda_soldado(self):
+        """El terreno de SketchUp viene con cara y dorso; recortado sin soldar,
+        el borde quedaba suelto y el solido salia roto: 2,081 piezas en vez de ~100."""
+        from despiece import recortar_xy
+        ter = _terreno()
+        dorso = trimesh.Trimesh(ter.vertices, ter.faces[:, ::-1], process=False)
+        doble = trimesh.util.concatenate([ter, dorso])
+        doble.merge_vertices()
+        lo, hi = np.array([10.0, 8.0]), np.array([50.0, 37.0])
+
+        def sueltas(m):
+            _, n = np.unique(np.sort(m.edges, axis=1), axis=0, return_counts=True)
+            return int((n == 1).sum())
+        crudo = doble
+        for o, nrm in (((lo[0], 0, 0), (1, 0, 0)), ((hi[0], 0, 0), (-1, 0, 0)),
+                       ((0, lo[1], 0), (0, 1, 0)), ((0, hi[1], 0), (0, -1, 0))):
+            crudo = crudo.slice_plane(np.array(o, float), np.array(nrm, float))
+        r = recortar_xy(doble, lo, hi)
+        self.assertAlmostEqual(float(r.extents[0]), 40.0, places=3)
+        # sin soldar: cada triangulo cortado deja su borde suelto; soldado, casi nada
+        self.assertGreater(sueltas(crudo), 100)
+        self.assertLess(sueltas(r), sueltas(crudo) / 10)

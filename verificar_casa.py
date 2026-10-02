@@ -11,7 +11,7 @@ import trimesh
 import shapely
 from shapely.geometry import Polygon
 
-from despiece import Config, cargar_modelo
+from despiece import Config, cargar_modelo, separar_terreno
 from estructura import despiece_estructural
 
 
@@ -20,6 +20,10 @@ def probar(ruta, escala=100.0, carton_mm=2.0, paso_mm=0.4, unidades='m', roce_mm
            con_uniones=True):
     cfg = Config(escala, carton_mm, 0.0, (600, 900), unidades_modelo=unidades)
     m = cargar_modelo(ruta)
+    # El terreno va en curvas, no en placas (app._procesar): aqui solo el edificio.
+    _, m = separar_terreno(m)
+    if m is None:
+        raise SystemExit('el modelo es puro terreno: va en curvas de nivel, no hay placas que armar')
     # Se arman LAS MISMAS placas que salen en la hoja: despiece_estructural y no
     # una copia del pipeline. La copia armaba siempre con dientes y la app corta
     # a tope de fabrica (28 sep): medía 0.04% en Engel mientras el alumno recibia

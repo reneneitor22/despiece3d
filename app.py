@@ -814,11 +814,9 @@ def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
     dbg.log('procesar.inicio', ruta=ruta_modelo, nombre=nombre,
             modo=campos.get('modo', 'curvas'), campos=sorted(campos))
     import trimesh
-    from despiece import (Config, solidificar, rebanar, armar_piezas, acomodar,
-                          partir_grandes, ROTACIONES_ORTO)
+    from despiece import Config, ROTACIONES_ORTO
     from estructura import despiece_estructural
     from isometrica import vista
-    import exportar
 
     unidades = campos.get('unidades', 'm')
     if unidades not in ('m', 'cm', 'mm'):          # si no, KeyError mas abajo
@@ -908,12 +906,66 @@ def _procesar(ruta_modelo, campos, carpeta, job, nombre, avisos_out):
         avisos_out.append(a)
 
     if campos.get('modo', 'curvas') == 'estructura':
+        # Terreno y edificio en el mismo modelo (Irving, 1 oct 2026): en placas el
+        # terreno salia en cientos de facetas dentadas que no arman. El terreno va
+        # en curvas de nivel, recortado alrededor del edificio; el edificio en
+        # placas; los dos en el mismo zip. Es lo que hace a mano quien sabe.
+        from despiece import separar_terreno, recortar_xy, caja_sin_laminas
+        terreno, edif = separar_terreno(m)
+        rt = None
+        if edif is None:
+            a = ('tu modelo es puro terreno: lo sacamos en curvas de nivel, como en '
+                 '"Terreno / topografia".')
+            avisos_lector.append(a)
+            avisos_out.append(a)
+            return _curvas(m, cfg, carpeta, job, nombre, campos, unidades, avisos_lector, _t0)
+        if terreno is not None:
+            # ponytail: margen fijo de 6 cm de maqueta alrededor del edificio (Irving
+            # dejo ~5 cm a 1:100); si el alumno quiere mas sitio, un campo en la pantalla.
+            margen = 60.0 / cfg.a_mm
+            lo, hi = caja_sin_laminas(edif)
+            terreno = recortar_xy(terreno, lo - margen, hi + margen)
+            with dbg.etapa('terreno_aparte', caras=len(terreno.faces)):
+                rt = _curvas(terreno, cfg, carpeta, job, nombre + ' terreno', campos, unidades, [], _t0)
+            if rt.get('ok'):
+                for f in os.listdir(carpeta):       # su zip y su guia sobran: va todo en el del edificio
+                    if f.endswith('_despiece.zip'):
+                        os.remove(os.path.join(carpeta, f))
+                st = rt['stats']
+                a = ('separamos el terreno del edificio: el terreno va en curvas de nivel '
+                     '(%d piezas en %d hoja(s), archivos "%s terreno"), recortado a %.0f x %.0f '
+                     'alrededor del edificio; el edificio va en placas.'
+                     % (st['n_piezas'], st['n_hojas'], nombre, terreno.extents[0], terreno.extents[1]))
+            else:
+                a = 'el terreno no se pudo sacar en curvas (%s): va solo el edificio.' % rt.get('error')
+                rt = None
+            avisos_lector.append(a)
+            avisos_out.append(a)
+            m = edif
         r = _estructural(m, cfg, carpeta, job, nombre, campos)
         if isinstance(r, dict) and r.get('ok'):
             r['segundos'] = round(time.perf_counter() - _t0, 1)
             r['avisos'] = avisos_lector + list(r.get('avisos') or [])
+            if rt:
+                r['svgs'] = r['svgs'] + rt['svgs']
+                for k in ('n_piezas', 'n_hojas', 'material_cm2'):
+                    r['stats'][k] = round(r['stats'][k] + rt['stats'][k], 1)
+                r['dwg']['n'] += rt['dwg']['n']
+                r['dwg']['aviso'] = r['dwg']['aviso'] or rt['dwg']['aviso']
+                r['terreno'] = {k: rt['stats'][k] for k in ('n_piezas', 'n_hojas')}
         return r
 
+    return _curvas(m, cfg, carpeta, job, nombre, campos, unidades, avisos_lector, _t0)
+
+
+def _curvas(m, cfg, carpeta, job, nombre, campos, unidades, avisos_lector, _t0):
+    """Modo terreno: rebanadas apiladas. Vivia dentro de _procesar; desde el 1 oct
+    2026 tambien la usa el modo casa para el terreno de un modelo que trae
+    terreno y edificio juntos (ver _procesar)."""
+    from despiece import solidificar, rebanar, armar_piezas, acomodar, partir_grandes
+    import exportar
+    escala, espesor, vaciar = cfg.escala, cfg.espesor_mm, cfg.vaciar
+    hw, hh = cfg.hoja
     # Antes de rebanar: 7000 capas se comen la memoria y el proceso muere sin
     # decir por que (Project LoopS, 27 sep 2026). El 400 de abajo queda de red.
     from despiece import contar_capas

@@ -42,8 +42,173 @@ class Config:
 
 
 def cargar_modelo(ruta):
-    """El modelo del archivo, sin la geometria perdida lejos (ver quitar_perdidos)."""
-    return quitar_perdidos(_cargar_modelo(ruta))
+    """El modelo del archivo, sin la geometria perdida lejos (ver quitar_perdidos)
+    ni los planos auxiliares (ver quitar_planos_auxiliares)."""
+    return quitar_planos_auxiliares(quitar_perdidos(_cargar_modelo(ruta)))
+
+
+def _componentes(m):
+    """Etiqueta por cara del pedazo conectado al que pertenece, por VERTICES
+    compartidos. Por aristas (face_adjacency) no sirve con SketchUp: una cara con
+    distinto material de cada lado sale dos veces (cara y dorso), cada arista la
+    comparten 4 caras y trimesh solo une aristas de 2: el terreno de Irving
+    salia en 65 mil pedazos de un triangulo (1 oct 2026)."""
+    import numpy as np
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    e = m.edges_unique
+    g = coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(len(m.vertices),) * 2)
+    _, lab = connected_components(g, directed=False)
+    return np.unique(lab[m.faces[:, 0]], return_inverse=True)[1].ravel()
+
+
+def _por_pedazo(m, et):
+    """(planas, zmin, zmax, xy_min, xy_max) por pedazo; planas = lamina horizontal
+    sin espesor (todas sus caras miran arriba o abajo y no sube nada)."""
+    import numpy as np
+    n = int(et.max()) + 1
+    t = m.triangles
+    zmin, zmax = np.full(n, np.inf), np.full(n, -np.inf)
+    lo, hi = np.full((n, 2), np.inf), np.full((n, 2), -np.inf)
+    np.minimum.at(zmin, et, t[:, :, 2].min(1))
+    np.maximum.at(zmax, et, t[:, :, 2].max(1))
+    np.minimum.at(lo, et, t[:, :, :2].min(1))
+    np.maximum.at(hi, et, t[:, :, :2].max(1))
+    horiz = np.ones(n, bool)
+    np.logical_and.at(horiz, et, np.abs(m.face_normals[:, 2]) > 0.9999)
+    planas = horiz & (zmax - zmin <= 1e-5 * float(m.extents.max()) + 1e-12)
+    return planas, zmin, zmax, lo, hi
+
+
+def detectar_terreno(m, et=None, fuera=None):
+    """Mascara de caras que son TERRENO, o None. Pedazos que: tienen >= 200 caras,
+    no son lamina plana, el 80% de su area no es vertical, tienen >= 50
+    inclinaciones distintas (un techo plegado tiene pocas), estan abajo (empiezan
+    en el 15% mas bajo del modelo) y, juntos, cubren >= 30% de la planta del
+    modelo. Asi entran el terreno de Google Earth (Irving, Vaticano), un TIN de
+    curvas y los mosaicos de terreno; un techo arriba o una casa sola, no.
+    `fuera`: pedazos que no cuentan (planos auxiliares ya marcados)."""
+    import numpy as np
+    if (m.metadata or {}).get('semantica') or len(m.faces) < 200:
+        return None
+    et = _componentes(m) if et is None else et
+    planas, zmin, zmax, lo, hi = _por_pedazo(m, et)
+    descartar = planas if fuera is None else planas | fuera
+    resto = ~descartar[et]
+    if not resto.any():
+        return None
+    n = len(planas)
+    a, nz = m.area_faces, m.face_normals[:, 2]
+    area = np.bincount(et, a, n)
+    no_vert = np.bincount(et, a * (np.abs(nz) > 0.2), n)
+    caras = np.bincount(et, minlength=n)
+    z0 = float(zmin[~descartar].min())
+    zr = float(zmax[~descartar].max()) - z0 or 1.0
+    L, H = lo[~descartar].min(0), hi[~descartar].max(0)
+    A = float(np.prod(H - L)) or 1.0
+    cand = [c for c in np.where((caras >= 200) & ~descartar & (no_vert >= 0.8 * area)
+                                & (zmin <= z0 + 0.15 * zr))[0]
+            if len(np.unique(np.round(m.face_normals[et == c], 2), axis=0)) >= 50]
+    if not cand:
+        return None
+    if float(np.prod(hi[cand].max(0) - lo[cand].min(0))) < 0.3 * A:
+        return None
+    return np.isin(et, cand)
+
+
+def quitar_planos_auxiliares(m):
+    """Quita las laminas planas horizontales que no son de la maqueta y lo dice.
+
+    Irving (1 oct 2026) dejo en su SketchUp 31 planos de 179x144 m, uno cada
+    metro: el truco para sacar curvas de nivel intersectando el terreno. Mas la
+    foto plana de geolocalizacion. La app los corto como losas: 114 hojas en
+    modo casa, 805 en modo terreno.
+    Se van (a) las laminas planas APILADAS (2 o mas con la misma planta) que
+    sobresalen por los 4 lados de todo lo demas: los planos de corte; una losa
+    nunca le gana al edificio entero, y un piso suelto se queda (puede ser la
+    base); y (b) si hay terreno, la que cubre casi todo el terreno (la foto)."""
+    import numpy as np
+    if (m.metadata or {}).get('semantica') or len(m.faces) < 8:
+        return m
+    et = _componentes(m)
+    planas, zmin, zmax, lo, hi = _por_pedazo(m, et)
+    if not planas.any() or planas.all():
+        return m
+    L, H = lo[~planas].min(0), hi[~planas].max(0)
+    holgura = 0.01 * (H - L)
+    fuera = planas & (lo < L - holgura).all(1) & (hi > H + holgura).all(1)
+    # ...y vienen apiladas (2 o mas con la misma planta): una sola puede ser el
+    # piso o el lote que el alumno quiere de base (la plaza de la Iglesia de la Luz).
+    paso = 0.01 * float((H - L).max())
+    planta = np.round(np.hstack([lo, hi]) / paso)
+    for c in np.where(fuera)[0]:
+        if (fuera & (np.abs(planta - planta[c]) <= 1).all(1)).sum() < 2:
+            fuera[c] = False
+    # pedazos de esos mismos planos (a su altura y dentro de su planta): Irving
+    # tenia uno de 18x16 m suelto a z=-1.5 que inflaba el recorte del terreno
+    for c in np.where(fuera)[0]:
+        fuera |= planas & (np.abs(zmin - zmin[c]) <= 1e-5 * float(m.extents.max()) + 1e-12) \
+            & (lo >= lo[c] - 1e-9).all(1) & (hi <= hi[c] + 1e-9).all(1)
+    ter = detectar_terreno(m, et, fuera)
+    if ter is not None:
+        tl, th = m.triangles[ter][:, :, :2].reshape(-1, 2).min(0), m.triangles[ter][:, :, :2].reshape(-1, 2).max(0)
+        cubre = np.clip(np.minimum(hi, th) - np.maximum(lo, tl), 0, None).prod(1)
+        fuera |= planas & (cubre >= 0.8 * float(np.prod(th - tl)))
+    if not fuera.any():
+        return m
+    quitar = fuera[et]
+    tam = sorted({'%.0fx%.0f' % tuple(hi[c] - lo[c]) for c in np.where(fuera)[0]})
+    m.update_faces(~quitar)
+    m.remove_unreferenced_vertices()
+    m.metadata['despiece_avisos'] = list(m.metadata.get('despiece_avisos') or []) + [
+        'quitamos %d plano(s) auxiliar(es) (%s, en sus unidades): laminas planas que cubren '
+        'todo el modelo o todo el terreno, como los planos para sacar curvas de nivel o la '
+        'foto de geolocalizacion. No son parte de la maqueta.' % (int(fuera.sum()), ', '.join(tam[:3]))]
+    return m
+
+
+def separar_terreno(m):
+    """(terreno, edificio). (None, m) si no trae terreno; (m, None) si es puro
+    terreno. La usan el modo casa (app._procesar) y la prueba de ensamble
+    (verificar_casa): la prueba arma lo mismo que se corta en placas."""
+    import numpy as np
+    ter = detectar_terreno(m)
+    if ter is None:
+        return None, m
+    if ter.all():
+        return m, None
+    partes = []
+    for mask in (ter, ~ter):
+        p = m.submesh([np.where(mask)[0]], append=True)
+        p.metadata.update(m.metadata)
+        partes.append(p)
+    return tuple(partes)
+
+
+def caja_sin_laminas(m):
+    """(lo, hi) en planta de lo que NO es lamina plana suelta: un pedazo de plano
+    lejos no debe agrandar el recorte del terreno. Si todo es lamina, todo."""
+    import numpy as np
+    et = _componentes(m)
+    planas, _, _, lo, hi = _por_pedazo(m, et)
+    if planas.all():
+        return m.bounds[0][:2], m.bounds[1][:2]
+    return lo[~planas].min(0), hi[~planas].max(0)
+
+
+def recortar_xy(m, lo, hi):
+    """La malla recortada a la caja [lo, hi] en planta (sin tapar: el modo
+    terreno la solidifica despues). Soldada: slice_plane deja sueltos los vertices
+    nuevos del borde y con la cara y el dorso de SketchUp el solido salia roto
+    (Irving 1:100: 2,081 piezas de terreno en vez de ~90, 2 oct 2026)."""
+    import numpy as np
+    for o, n in (((lo[0], 0, 0), (1, 0, 0)), ((hi[0], 0, 0), (-1, 0, 0)),
+                 ((0, lo[1], 0), (0, 1, 0)), ((0, hi[1], 0), (0, -1, 0))):
+        m = m.slice_plane(np.array(o, float), np.array(n, float))
+        if m.is_empty:
+            return m
+    m.merge_vertices()
+    return m
 
 
 def quitar_perdidos(m, fraccion=0.005, colchon=1.0, crece=1.5):
