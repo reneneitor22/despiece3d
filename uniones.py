@@ -739,8 +739,12 @@ def recortar_choques(placas, contactos, t_placa_modelo, max_perdida=0.25):
                 if nuevo is None:
                     motivos.append('%s %s' % (P.get('id', '?'), perdida))
                     continue
-                # primero la que termina ahi; luego la que menos pierde
-                opciones.append(((not termina, perdida), P, nuevo))
+                # primero la que termina ahi; luego la que menos pierde. La perdida
+                # va redondeada al 1%: con 6.0000% contra 5.9999% decidia el ruido
+                # de 1e-8 y el orden de recortes salia distinto con cada espesor
+                # (cubo de 3 mm, 2 oct 2026: muro con dos ranuras y patitas de
+                # 3 mm). En empate gana el orden fijo de las placas.
+                opciones.append(((not termina, round(perdida, 2)), P, nuevo))
             if not opciones:
                 # Ninguna aguanta la ranura entera: se cruzan de orilla a orilla.
                 # Media ranura en cada una, cada media abierta hacia la orilla de

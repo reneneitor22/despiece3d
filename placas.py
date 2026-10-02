@@ -389,9 +389,12 @@ def _placas_de_superficies(mesh, min_area, muro_max=MURO_MAX, t_modelo=0.0):
             if j in tomados:
                 continue
             b = planos[j]
-            # contra el grupo entero, no solo contra la primera: asi entra la
-            # tercera cara aunque quede lejos de la de arranque
-            if min(abs(b['d'] - planos[k]['d']) for k in grupo) > muro_max:
+            # El grueso del muro ENTERO no pasa de muro_max, no solo el salto a la
+            # cara vecina: medido de vecina en vecina, las facetas de un hueco
+            # redondo se encadenaban (cubo de 3 mm, 2 oct 2026: muro de 0.3 m
+            # leido de 1.9 m y corrido 80 cm hacia adentro).
+            ds_g = [planos[k]['d'] for k in grupo] + [b['d']]
+            if max(ds_g) - min(ds_g) > muro_max:
                 continue
             try:
                 comun = max(b['poly'].intersection(planos[k]['poly']).area for k in grupo)

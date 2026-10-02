@@ -1380,3 +1380,23 @@ class PlanosYTerreno(Base):
         # sin soldar: cada triangulo cortado deja su borde suelto; soldado, casi nada
         self.assertGreater(sueltas(crudo), 100)
         self.assertLess(sueltas(r), sueltas(crudo) / 10)
+
+
+class MuroNoSeEncadena(Base):
+    """2 oct 2026, cubo de prueba a 3 mm con un hueco redondo: las facetas del
+    hueco, casi paralelas al muro de al lado, se sumaban de vecina en vecina y
+    el muro de 0.3 m salia de 1.9 m, corrido 80 cm hacia adentro (1.09% de choque)."""
+
+    def test_el_grueso_total_no_pasa_de_muro_max(self):
+        import placas
+
+        def cara(x, y0, y1, z0, z1):
+            v = np.array([[x, y0, z0], [x, y1, z0], [x, y1, z1], [x, y0, z1]], float)
+            return trimesh.Trimesh(vertices=v, faces=np.array([[0, 1, 2], [0, 2, 3]]),
+                                   process=False)
+        # las dos caras del muro, y dos facetas chicas a 0.7 m una de otra
+        m = trimesh.util.concatenate([cara(-2.5, 0, 5, 0, 5), cara(-2.2, 0, 5, 0, 5),
+                                      cara(-1.5, 2, 2.1, 2, 2.5), cara(-0.8, 2, 2.1, 2, 2.5)])
+        sup, _ = placas._placas_de_superficies(m, placas.MIN_AREA_SUP, t_modelo=0.3)
+        muro = max(sup, key=lambda p: p['area'])
+        self.assertAlmostEqual(muro['espesor_real'], 0.3, places=3)
