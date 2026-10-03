@@ -1029,6 +1029,7 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
         bastidor = 0.0
     bastidor = min(max(bastidor, 0.0), 120.0)
     juntar = campos.get('juntar_plantas', '0') in ('1', 'true', 'on')
+    huecos = campos.get('muros_huecos', '0') in ('1', 'true', 'on')
     piso = campos.get('piso', '').strip()
     piso = int(piso) if piso.isdigit() and int(piso) > 0 else None
     with dbg.etapa('despiece_estructural', uniones=con_uniones, envolvente=envolvente,
@@ -1037,7 +1038,8 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
                                             solo_envolvente=envolvente, piso=piso,
                                             laminar_macizos=macizos,
                                             grabar_planta=grabar_planta,
-                                            bastidor_mm=bastidor)
+                                            bastidor_mm=bastidor,
+                                            muros_huecos=huecos)
     if 'error' in info:
         dbg.log('estructural.error', nivel='error', motivo=info['error'])
         return {'error': info['error']}

@@ -216,9 +216,36 @@ def piezas_bastidor(mesh, cfg, alto_mm=15.0, margen_mm=8.0):
     return salida
 
 
+def partir_en_caras(placas, t_mod):
+    """Muro hueco: cada muro sale como DOS caras de carton, una en cada paño del
+    muro real, con la holgura en medio para que el alumno pase instalaciones.
+    Holgura = espesor del muro a escala - 2 caras (20 cm a 1:25 en 2 mm: 8-4 = 4 mm).
+    El muro que no da para dos caras y algo de hueco se queda macizo."""
+    out, n = [], 0
+    for p in placas:
+        e = float(p['espesor_real'])
+        if p['tipo'] != 'muro' or e < 2.5 * t_mod:
+            out.append(p)
+            continue
+        d = (e - t_mod) / 2.0          # del eje del muro al eje de cada cara
+        for lado, s in (('a', 1.0), ('b', -1.0)):
+            q = dict(p)
+            q['a_mundo'] = p['a_mundo'].copy()
+            q['a_mundo'][:3, 3] = p['a_mundo'][:3, 3] + s * d * p['normal']
+            q['centro'] = p['centro'] + s * d * p['normal']
+            q['espesor_real'] = t_mod
+            q['holgura_real'] = e - 2 * t_mod
+            q['id'] = p['id'] + lado
+            out.append(q)
+        n += 1
+    for i, p in enumerate(out):
+        p['i'] = i
+    return out, n
+
+
 def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
                          piso=None, laminar_macizos=False, grabar_planta=True,
-                         bastidor_mm=0.0):
+                         bastidor_mm=0.0, muros_huecos=False):
     """Devuelve (piezas_mm, info). Las piezas traen 'poly' en mm de maqueta."""
     # Un modelo con semantica (.ifc) ya trae partidos los cuerpos --cada
     # elemento es uno-- y ademas dice cual es muro y a que planta pertenece.
@@ -294,6 +321,9 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
 
     # espesor del carton llevado a unidades del modelo
     t_mod = cfg.espesor_mm / cfg.a_mm
+    n_huecos = 0
+    if muros_huecos:
+        placas, n_huecos = partir_en_caras(placas, t_mod)
     contactos, n_uniones = [], 0
     n_recortes, avisos_recorte = 0, []
     avisos_previos = []
@@ -311,6 +341,11 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
                          for c, n in sorted(r.get('fuera', {}).items(),
                                             key=lambda x: -x[1])[:4]) or 'nada',
                ', '.join(r.get('plantas', [])) or 'una'))
+    if n_huecos:
+        hs = sorted({round(p['holgura_real'] * cfg.a_mm, 1) for p in placas if 'holgura_real' in p})
+        avisos_previos.append('%d muros van huecos: dos caras de %.1f mm con %s mm de holgura '
+                              'entre ellas para instalaciones'
+                              % (n_huecos, cfg.espesor_mm, ' / '.join('%g' % h for h in hs)))
     if piso is not None:
         avisos_previos.append('cortado el piso %d de %d (losas a %s m)'
                               % (piso, len(niveles),
@@ -451,6 +486,7 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
         'n_recortes': n_recortes,
         'n_huellas': n_huellas,
         'n_bastidor': n_bastidor,
+        'n_huecos': n_huecos,
         'n_plantas': max([p.get('planta', 1) for p in placas] or [1]),
         'avisos': avisos_previos + _resumir_encimes(avisos_recorte),
         'descartados': descartados,
