@@ -2,7 +2,7 @@
 """Despiece estructural completo: modelo 3D -> placas con uniones -> piezas en mm."""
 import numpy as np
 import trimesh
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, box
 import shapely.affinity as aff
 
 from placas import (extraer_placas, nombrar, marcar_envolvente,
@@ -216,18 +216,54 @@ def piezas_bastidor(mesh, cfg, alto_mm=15.0, margen_mm=8.0):
     return salida
 
 
+LOSA_HUECA_MAX = 0.50          # m reales: mas gruesa que esto no es losa, es pretil o volumen
+
+
+def _bordes_de_losa(p, t_mod, hueco):
+    """Tiras verticales por el contorno de una losa hueca, metidas entre sus dos
+    caras: cierran el canto y son en lo que se apoya la cara de arriba. Alto =
+    la holgura, grueso = el carton, a media lamina hacia adentro del borde."""
+    F, n = p['a_mundo'], p['normal'] / np.linalg.norm(p['normal'])
+    anillo = p['poly'].simplify(0.01).exterior
+    adentro = 1.0 if p['poly'].exterior.is_ccw else -1.0
+    xy = list(anillo.coords)
+    tiras = []
+    for (x0, y0), (x1, y1) in zip(xy[:-1], xy[1:]):
+        a = (F @ [x0, y0, 0, 1])[:3]
+        b = (F @ [x1, y1, 0, 1])[:3]
+        largo = float(np.linalg.norm(b - a))
+        if largo < 2 * t_mod:
+            continue
+        u = (b - a) / largo
+        dentro = np.cross(n, u) * adentro          # en el plano de la losa, hacia adentro
+        centro = (a + b) / 2.0 + dentro * t_mod / 2.0
+        G = np.eye(4)
+        G[:3, 0], G[:3, 1], G[:3, 2], G[:3, 3] = u, np.cross(dentro, u), dentro, centro
+        poly = box(-largo / 2.0, -hueco / 2.0, largo / 2.0, hueco / 2.0)
+        tiras.append({'cuerpo': p.get('cuerpo'), 'tipo': 'muro', 'normal': dentro,
+                      'espesor_real': t_mod, 'poly': poly, 'a_mundo': G, 'centro': centro,
+                      'area': float(poly.area), 'z_min': float(centro[2] - hueco / 2.0),
+                      'vanos': 0, 'borde_de': p['id']})
+    for k, q in enumerate(tiras):
+        q['id'] = '%s-B%d' % (p['id'], k + 1)
+    return tiras
+
+
 def partir_en_caras(placas, t_mod):
-    """Muro hueco: cada muro sale como DOS caras de carton, una en cada paño del
-    muro real, con la holgura en medio para que el alumno pase instalaciones.
-    Holgura = espesor del muro a escala - 2 caras (20 cm a 1:25 en 2 mm: 8-4 = 4 mm).
-    El muro que no da para dos caras y algo de hueco se queda macizo."""
+    """Muros y losas huecos: cada uno sale como DOS caras de carton, una en cada
+    paño del elemento real, con la holgura en medio para que el alumno pase
+    instalaciones. Holgura = espesor a escala - 2 caras (muro de 20 cm a 1:25 en
+    2 mm: 8-4 = 4 mm; losa de 15 cm: 6-4 = 2 mm). La losa ademas lleva tiras de
+    borde entre sus caras (_bordes_de_losa). Lo que no da para dos caras y algo
+    de hueco se queda macizo."""
     out, n = [], 0
     for p in placas:
         e = float(p['espesor_real'])
-        if p['tipo'] != 'muro' or e < 2.5 * t_mod:
+        hueca = (p['tipo'] == 'muro' or (p['tipo'] == 'losa' and e <= LOSA_HUECA_MAX))
+        if not hueca or e < 2.5 * t_mod or p.get('borde_de'):
             out.append(p)
             continue
-        d = (e - t_mod) / 2.0          # del eje del muro al eje de cada cara
+        d = (e - t_mod) / 2.0          # del eje del elemento al eje de cada cara
         for lado, s in (('a', 1.0), ('b', -1.0)):
             q = dict(p)
             q['a_mundo'] = p['a_mundo'].copy()
@@ -236,7 +272,11 @@ def partir_en_caras(placas, t_mod):
             q['espesor_real'] = t_mod
             q['holgura_real'] = e - 2 * t_mod
             q['id'] = p['id'] + lado
+            if p['tipo'] == 'losa':
+                q['z_min'] = float(q['centro'][2] - t_mod / 2.0)
             out.append(q)
+        if p['tipo'] == 'losa':
+            out.extend(_bordes_de_losa(p, t_mod, e - 2 * t_mod))
         n += 1
     for i, p in enumerate(out):
         p['i'] = i
@@ -343,8 +383,9 @@ def despiece_estructural(mesh, cfg, con_uniones=True, solo_envolvente=False,
                ', '.join(r.get('plantas', [])) or 'una'))
     if n_huecos:
         hs = sorted({round(p['holgura_real'] * cfg.a_mm, 1) for p in placas if 'holgura_real' in p})
-        avisos_previos.append('%d muros van huecos: dos caras de %.1f mm con %s mm de holgura '
-                              'entre ellas para instalaciones'
+        avisos_previos.append('%d muros y losas van huecos: dos caras de %.1f mm con %s mm de '
+                              'holgura entre ellas para instalaciones; las losas llevan '
+                              'tiras de borde (-B) entre sus caras'
                               % (n_huecos, cfg.espesor_mm, ' / '.join('%g' % h for h in hs)))
     if piso is not None:
         avisos_previos.append('cortado el piso %d de %d (losas a %s m)'
