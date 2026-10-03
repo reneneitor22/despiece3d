@@ -18,7 +18,6 @@ PASOS = {
     'recibir': ('Recibiendo el modelo', 6),
     'parse': ('Leyendo la subida', 10),
     'guardar': ('Guardando el modelo', 14),
-    'ejemplo.copiar': ('Copiando el ejemplo', 14),
     'arrancando': ('Preparando el motor', 16),
     'cargar_modelo': ('Abriendo el modelo', 20),
     'solidificar': ('Cerrando la malla', 28),
@@ -84,57 +83,6 @@ EXT_EXPORTAR = {
 # Formatos que se reconocen para NO leerlos: en vez de "formato no soportado"
 # se contesta con la version del archivo y como sacarle el IFC (ver rvt.py).
 EXT_CERRADA = {'.rvt', '.rfa', '.rte', '.rft'}
-
-MOD = os.path.join(BASE, 'modelos_prueba')
-# Ejemplos listos para probar sin buscar archivos. Los sinteticos siempre estan;
-# los de internet solo si se clonaron los repos (ver PRUEBAS_REALES.md).
-EJEMPLOS = [
-    {'id': 'casa', 'titulo': 'Casa de prueba',
-     'pie': 'Sintetica, con vanos, losa y techo · 9 placas',
-     'ruta': os.path.join(BASE, 'out', 'casa_prueba.stl'),
-     'campos': {'modo': 'estructura', 'escala': '100', 'espesor': '2',
-                'hoja': '600x900', 'unidades': 'm'}},
-    {'id': 'terreno', 'titulo': 'Terreno de prueba',
-     'pie': 'Sintetico, curvas de nivel · 26 piezas',
-     'ruta': os.path.join(BASE, 'out', 'terreno_prueba.stl'),
-     'campos': {'modo': 'curvas', 'escala': '500', 'espesor': '3',
-                'hoja': '500x700', 'unidades': 'm'}},
-    {'id': 'bauhaus_env', 'titulo': 'Casa Engel · envolvente',
-     'pie': 'Bauhaus de Tel Aviv, muros sin espesor · 56 placas en 1 hoja',
-     'ruta': os.path.join(MOD, 'ladybug/obj/engel-house/AngelHouse_Bauhaus-in-Israel.obj'),
-     'campos': {'modo': 'estructura', 'escala': '100', 'espesor': '2',
-                'hoja': '600x900', 'unidades': 'm', 'envolvente': '1'}},
-    {'id': 'bauhaus_piso', 'titulo': 'Casa Engel · piso 10',
-     'pie': 'Un solo nivel, muros cortados a su altura · 38 placas',
-     'ruta': os.path.join(MOD, 'ladybug/obj/engel-house/AngelHouse_Bauhaus-in-Israel.obj'),
-     'campos': {'modo': 'estructura', 'escala': '100', 'espesor': '2',
-                'hoja': '600x900', 'unidades': 'm', 'piso': '10'}},
-    {'id': 'bauhaus', 'titulo': 'Casa Engel · completa',
-     'pie': 'Con entrepisos y muros interiores · 143 placas',
-     'ruta': os.path.join(MOD, 'ladybug/obj/engel-house/AngelHouse_Bauhaus-in-Israel.obj'),
-     'campos': {'modo': 'estructura', 'escala': '100', 'espesor': '2',
-                'hoja': '600x900', 'unidades': 'm'}},
-    {'id': 'mainstreet', 'titulo': 'Main Street Place',
-     'pie': 'STL de 703 mil caras, 10 676 cuerpos · 303 placas',
-     'ruta': os.path.join(MOD, 'ladybug/stl-samples/MainStreetPlace.stl'),
-     'campos': {'modo': 'estructura', 'escala': '500', 'espesor': '2',
-                'hoja': '600x900', 'unidades': 'm'}},
-    {'id': 'gale', 'titulo': 'Crater Gale (Marte)',
-     'pie': 'Topografia de la NASA · 247 piezas, 11 partidas por no caber',
-     'ruta': os.path.join(MOD, 'nasa/stl/gale_crater.STL'),
-     'campos': {'modo': 'curvas', 'escala': '200', 'espesor': '3',
-                'hoja': '500x700', 'unidades': 'm'}},
-    {'id': 'valles', 'titulo': 'Valles Marineris (Marte)',
-     'pie': 'Topografia de la NASA · 293 piezas en 33 hojas',
-     'ruta': os.path.join(MOD, 'nasa/stl/mars_valles_mar.STL'.replace('.STL', '.stl')),
-     'campos': {'modo': 'curvas', 'escala': '100', 'espesor': '3',
-                'hoja': '500x700', 'unidades': 'm'}},
-]
-
-
-def ejemplos_disponibles():
-    """Solo los que de verdad estan en disco: los de internet son opcionales."""
-    return [e for e in EJEMPLOS if os.path.exists(e['ruta'])]
 
 
 def parse_multipart(body, boundary):
@@ -409,11 +357,6 @@ class H(BaseHTTPRequestHandler):
                               json.dumps({'etapa': paso, 'texto': etiqueta,
                                           'pct': pct, 'seg': round(seg, 1)},
                                          ensure_ascii=False))
-        if ruta == '/ejemplos':
-            lista = [{'id': e['id'], 'titulo': e['titulo'], 'pie': e['pie']}
-                     for e in ejemplos_disponibles()]
-            return self._send(200, 'application/json; charset=utf-8',
-                              json.dumps(lista, ensure_ascii=False))
         # El nombre viaja codificado (espacios, acentos, #): sin decodificarlo, "Casa
         # Díaz FINAL.pdf" daba 404 (cambio local, 12 sep 2026).
         m = re.match(r'^/r/([a-f0-9]{12})/(.+)$', unquote(ruta))
@@ -431,47 +374,6 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, tipo, open(f, 'rb').read(), extra)
         self._send(404, 'text/plain; charset=utf-8', 'no existe')
 
-    def _ejemplo(self):
-        """Corre un modelo que ya esta en disco, con sus parametros preparados."""
-        job = None
-        try:
-            n = int(self.headers.get('Content-Length', 0))
-            pedido = json.loads(self.rfile.read(n) or b'{}')
-            dbg.log('ejemplo.pedido', id=pedido.get('id'))
-            elegido = next((e for e in ejemplos_disponibles()
-                            if e['id'] == pedido.get('id')), None)
-            if elegido is None:
-                dbg.log('ejemplo.rechazo', nivel='error', id=pedido.get('id'))
-                return self._send(404, 'application/json; charset=utf-8',
-                                  json.dumps({'error': 'ese ejemplo no esta en disco'}))
-            job = self._job_pedido()
-            carpeta = os.path.join(JOBS, job)
-            os.makedirs(carpeta, exist_ok=True)
-            dbg.set_job(job)
-            dbg.marcar('recibir', job)
-            ext = os.path.splitext(elegido['ruta'])[1].lower()
-            os.makedirs(os.path.join(carpeta, 'entrada'), exist_ok=True)
-            destino = os.path.join(carpeta, 'entrada', 'modelo' + ext)
-            with dbg.etapa('ejemplo.copiar', origen=elegido['ruta'], destino=destino):
-                shutil.copyfile(elegido['ruta'], destino)
-            dbg.log('ejemplo.verif', bytes=os.path.getsize(destino))
-            r = procesar(destino, dict(elegido['campos']), carpeta, job,
-                         re.sub(r'[^A-Za-z0-9_-]+', '_', elegido['titulo']))
-            dbg.marcar('listo', job)
-            if isinstance(r, dict) and job:
-                r.setdefault('job', job)
-            return self._send(200, 'application/json; charset=utf-8',
-                              json.dumps(r, ensure_ascii=False))
-        except Exception as e:
-            traceback.print_exc()
-            dbg.log('handler.error', nivel='error', excepcion=repr(e),
-                    traceback=traceback.format_exc())
-            err = {'error': '%s: %s' % (type(e).__name__, e)}
-            if job:
-                err['job'] = job
-            return self._send(500, 'application/json; charset=utf-8',
-                              json.dumps(err, ensure_ascii=False))
-
     def do_POST(self):
         dbg.set_request('debug=1' in self._query())
         try:
@@ -481,8 +383,6 @@ class H(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         ruta = self.path.split('?')[0]
-        if ruta == '/ejemplo':
-            return self._ejemplo()
         if ruta != '/cortar':
             return self._send(404, 'text/plain', 'no existe')
         job = None
@@ -1339,15 +1239,6 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
 .archivos a{font-size:12.5px;padding:6px 11px;border:1px solid var(--linea);border-radius:8px;
  background:#fff;color:var(--tenue);text-decoration:none;font-variant-numeric:tabular-nums}
 .archivos a:hover{color:var(--txt);border-color:var(--tenue2)}
-.ejs{display:grid;grid-template-columns:repeat(auto-fit,minmax(218px,1fr));gap:10px;margin-top:12px}
-.ej{text-align:left;padding:13px 15px;border:1px solid var(--linea);border-radius:12px;
- background:#fff;color:var(--txt);font:inherit;cursor:pointer;transition:border-color .15s}
-.ej:hover:not(:disabled){border-color:var(--acento)}
-.ej:disabled{opacity:.55;cursor:default}
-.ej b{display:block;font-size:14px;margin-bottom:2px;font-weight:600}
-.ej small{color:var(--tenue2);font-size:12px;line-height:1.4;display:block}
-.ejs-tit{font-size:11.5px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;
- color:var(--tenue2);margin:26px 0 0}
 .hoja h3{font-size:12px;margin:0 0 12px;color:var(--tenue2);font-weight:650;
  text-transform:uppercase;letter-spacing:.06em}
 .hoja svg{width:100%;height:auto;background:#fff;border:1px solid var(--linea);border-radius:10px}
@@ -1570,10 +1461,6 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
   </div>
  </div>
  <div class="err" id="err" hidden></div>
- <p class="ejs-tit">O pruébalo con un ejemplo</p>
- <div class="ejs" id="ejs"></div>
- <p class="nota" id="ejsNota" hidden></p>
- <p class="nota"><a href="#" id="dbgToggle"></a></p>
 </div>
 
 <details class="card" id="dbg" hidden>
@@ -1601,14 +1488,6 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 
 // --- Correa de debug -------------------------------------------------------
 const DEBUG=/(?:^|[?&])debug=1(?:&|$)/.test(location.search);
-function dbgToggleTxt(){$('dbgToggle').textContent=DEBUG?'ocultar debug':'mostrar debug';}
-$('dbgToggle').onclick=e=>{
-  e.preventDefault();
-  const p=new URLSearchParams(location.search);
-  if(DEBUG)p.delete('debug');else p.set('debug','1');
-  location.search=p.toString();
-};
-dbgToggleTxt();
 if(DEBUG){$('dbg').hidden=false;$('dbg').open=true;}
 function dbgKV(obj){
   $('dbgKV').innerHTML=Object.entries(obj).map(([k,v])=>
@@ -1755,47 +1634,6 @@ function material(){
 }
 
 pintarModo();resumenTaller();
-
-let corriendo=false;
-fetch('/ejemplos').then(r=>r.json()).then(lista=>{
-  const cont=$('ejs');
-  cont.innerHTML=lista.map(e=>
-    '<button class="ej" data-id="'+e.id+'"><b>'+esc(e.titulo)+'</b><small>'+esc(e.pie)+'</small></button>'
-  ).join('');
-  if(lista.length<4){
-    $('ejsNota').hidden=false;
-    $('ejsNota').textContent='Solo aparecen los ejemplos que están en disco. '+
-      'Para los modelos reales, clona los repos que dice PRUEBAS_REALES.md.';
-  }
-  cont.querySelectorAll('.ej').forEach(b=>b.onclick=()=>correrEjemplo(b));
-}).catch(()=>{});
-
-async function correrEjemplo(boton){
-  if(corriendo)return;
-  corriendo=true;
-  const antes=boton.innerHTML;
-  document.querySelectorAll('.ej').forEach(b=>b.disabled=true);
-  boton.innerHTML='<b><span class="spin"></span>Rebanando y acomodando…</b>'+
-                  '<small>Tranqui arqui, aún hay tiempo</small>';
-  $('err').hidden=true;$('res').hidden=true;
-  const job=nuevoJob();
-  arrancarProgreso(job);
-  try{
-    const r=await subir('/ejemplo?job='+job,JSON.stringify({id:boton.dataset.id}),
-                        {'Content-Type':'application/json'});
-    let d;try{d=JSON.parse(r.text);}catch(_){d={error:'respuesta no-JSON del servidor'};}
-    dbgResultado({job:d.job,raw:JSON.stringify(d,null,2),
-      kv:{ejemplo:boton.dataset.id,'status HTTP':r.status,'tiempo total':r.ms+' ms',
-          'export (servidor)':(d.segundos!=null?d.segundos+' s':'—')}});
-    if(d.error){fallo(d.error,d.avisos,d.caso);}else{pintar(d);}
-  }catch(e){fallo('No se pudo procesar: '+e.message);}
-  finally{
-    pararProgreso();
-    corriendo=false;
-    boton.innerHTML=antes;
-    document.querySelectorAll('.ej').forEach(b=>b.disabled=false);
-  }
-}
 
 $('go').onclick=async()=>{
   if(!archivo)return;
