@@ -21,6 +21,7 @@ from unittest import mock
 
 import numpy as np
 import trimesh
+from shapely.geometry import LineString
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 FIJOS = os.path.join(AQUI, 'pruebas_formato')
@@ -1400,3 +1401,28 @@ class MuroNoSeEncadena(Base):
         sup, _ = placas._placas_de_superficies(m, placas.MIN_AREA_SUP, t_modelo=0.3)
         muro = max(sup, key=lambda p: p['area'])
         self.assertAlmostEqual(muro['espesor_real'], 0.3, places=3)
+
+
+class GrabadoNoPisaCorte(unittest.TestCase):
+    """Grabado encimado en la linea de corte = doble pasada, canto quemado
+    (David, Alonso, 4 oct 2026). Lo que coincide con el corte no se graba."""
+
+    def test_huella_en_el_canto_se_quita(self):
+        from shapely.geometry import box
+        import exportar
+        losa = box(0, 0, 100, 60)
+        # muro del perimetro: su huella comparte el canto izquierdo de la losa
+        col = {'geo': losa, 'guia': box(0, 10, 4, 50)}
+        trazos = exportar._trazos_grabado(col)
+        filo = losa.boundary.buffer(0.1)
+        self.assertTrue(trazos)
+        for t, _ in trazos:
+            self.assertLess(LineString(t).intersection(filo).length, 0.25)
+        # lo de adentro se sigue grabando: lado x=4 (40) + arriba y abajo (4 - 0.3 c/u)
+        self.assertAlmostEqual(sum(LineString(t).length for t, _ in trazos), 47.4, delta=0.5)
+
+    def test_huella_suelta_queda_cerrada(self):
+        from shapely.geometry import box
+        import exportar
+        col = {'geo': box(0, 0, 100, 60), 'guia': box(20, 20, 30, 30)}
+        self.assertEqual([c for _, c in exportar._trazos_grabado(col)], [True])

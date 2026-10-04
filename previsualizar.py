@@ -2,6 +2,7 @@
 """Rasteriza una hoja a PNG con PIL, para revisar el corte sin depender del navegador."""
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
+from exportar import _trazos_grabado
 
 
 def _anillos(g):
@@ -30,9 +31,8 @@ def hoja_png(colocadas, cfg, ruta, px_por_mm=1.6, etiquetas=True):
             dr.polygon([T(x, y) for x, y in ext], fill='#fde7ec', outline='#e11d48')
             for r in ints:
                 dr.polygon([T(x, y) for x, y in r], fill='#ffffff', outline='#e11d48')
-        if col.get('guia') is not None:
-            for ext, _ in _anillos(col['guia']):
-                dr.line([T(x, y) for x, y in ext], fill='#2563eb', width=1)
+        for t, _ in _trazos_grabado(col):
+            dr.line([T(x, y) for x, y in t], fill='#2563eb', width=1)
         if etiquetas:
             rp = col['geo'].representative_point()
             x, y = T(rp.x, rp.y)

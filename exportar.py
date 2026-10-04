@@ -3,6 +3,7 @@
 import html
 import os
 import ezdxf
+from shapely.geometry import LineString
 
 # Convencion de capas por operacion. Cada taller tiene la suya --el nombre y el
 # color son lo unico que la cabina de corte mira para saber que hacer con cada
@@ -78,6 +79,35 @@ def _anillos(geom):
         if p.geom_type != 'Polygon' or p.is_empty:
             continue
         out.append((list(p.exterior.coords), [list(r.coords) for r in p.interiors]))
+    return out
+
+
+# Grabado encimado sobre corte: el laser pasa dos veces y el canto sale mas
+# quemado (David, Alonso, 4 oct 2026: hasta 50% del grabado de una hoja caia
+# sobre el borde, el muro del perimetro marcado justo en el canto de la losa).
+# Ahi la marca no dice nada --el canto ya ensena donde va el muro--, se quita.
+TOL_GRABADO_SOBRE_CORTE_MM = 0.3
+GRABADO_MIN_MM = 0.5
+
+
+def _trazos_grabado(col):
+    """Lineas de grabado de una colocada, sin lo que cae sobre su corte.
+    Devuelve [(coords, cerrado)]."""
+    guia = col.get('guia')
+    if guia is None or guia.is_empty:
+        return []
+    filo = col['geo'].boundary.buffer(TOL_GRABADO_SOBRE_CORTE_MM)
+    out = []
+    for ext, ints in _anillos(guia):
+        for anillo in [ext] + ints:
+            linea = LineString(anillo)
+            if not linea.intersects(filo):
+                out.append((anillo, True))
+                continue
+            resto = linea.difference(filo)
+            for tramo in getattr(resto, 'geoms', [resto]):
+                if tramo.geom_type == 'LineString' and tramo.length >= GRABADO_MIN_MM:
+                    out.append((list(tramo.coords), False))
     return out
 
 
@@ -358,11 +388,8 @@ def hoja_a_dxf(colocadas, cfg, ruta, titulo, ops=None, ficha=None, marco=True,
     # contorno. Al reves, el grabado y las ranuras salen movidos.
     for col in colocadas:
         pz = col['pieza']
-        if col['guia'] is not None:
-            for ext, ints in _anillos(col['guia']):
-                msp.add_lwpolyline(ext, close=True, dxfattribs={'layer': L_GRAB})
-                for r in ints:
-                    msp.add_lwpolyline(r, close=True, dxfattribs={'layer': L_GRAB})
+        for trazo, cerrado in _trazos_grabado(col):
+            msp.add_lwpolyline(trazo, close=cerrado, dxfattribs={'layer': L_GRAB})
 
         cx, cy, alto, giro = _rotulo(col['geo'], pz['id'])
         # El numero de pieza es MARCADO, no grabado: es lo que el alumno lee
@@ -435,8 +462,9 @@ def hoja_a_svg(colocadas, cfg, titulo, rotulo_zona='%s', notas=None,
          'stroke-width="0.3"/>' % (arriba, W, H),
          '<g transform="translate(0,%.3f) scale(1,-1)">' % Ht]
 
-    def path_de(anillos, color, grosor, punteado=False):
+    def path_de(anillos, color, grosor, punteado=False, abiertos=()):
         d = ['M ' + ' L '.join('%.3f %.3f' % (x, y) for x, y in a) + ' Z' for a in anillos]
+        d += ['M ' + ' L '.join('%.3f %.3f' % (x, y) for x, y in a) for a in abiertos]
         if not d:
             return
         dash = ' stroke-dasharray="2 1.5"' if punteado else ''
@@ -449,9 +477,9 @@ def hoja_a_svg(colocadas, cfg, titulo, rotulo_zona='%s', notas=None,
     for col in colocadas:
         pz = col['pieza']
         g = col['geo']
-        if col['guia'] is not None:
-            path_de([r for ext, ints in _anillos(col['guia']) for r in [ext] + ints],
-                    '#2563eb', 0.25, punteado=True)
+        trazos = _trazos_grabado(col)
+        path_de([t for t, cerrado in trazos if cerrado], '#2563eb', 0.25, punteado=True,
+                abiertos=[t for t, cerrado in trazos if not cerrado])
         x, y, alto, giro = _rotulo(g, pz['id'])
         etiquetas.append((x, y, _xml(pz['id']), alto, 'middle', giro))
     for anillos in _anillos_de_corte(colocadas):
@@ -703,23 +731,24 @@ def hojas_a_pdf(hojas, cfg, ruta, titulo_base):
         c.setStrokeColorRGB(0.72, 0.72, 0.75)
         c.rect(0, 0, W * MM, H * MM, stroke=1, fill=0)
 
-        def trazo(anillo):
+        def trazo(anillo, cerrado=True):
             p = c.beginPath()
             p.moveTo(anillo[0][0] * MM, anillo[0][1] * MM)
             for x, y in anillo[1:]:
                 p.lineTo(x * MM, y * MM)
-            p.close()
+            if cerrado:
+                p.close()
             c.drawPath(p, stroke=1, fill=0)
 
         # Mismo orden que el DXF: grabado primero, corte al final, huecos antes
         # que el contorno de su pieza.
         for col in colocadas:
-            if col['guia'] is not None:
+            trazos = _trazos_grabado(col)
+            if trazos:
                 c.setStrokeColorRGB(0.15, 0.39, 0.92)      # grabado
                 c.setDash(2 * MM, 1.5 * MM)
-                for ext, ints in _anillos(col['guia']):
-                    for anillo in [ext] + ints:
-                        trazo(anillo)
+                for t, cerrado in trazos:
+                    trazo(t, cerrado)
                 c.setDash()
 
             x, y, alto, giro = _rotulo(col['geo'], col['pieza']['id'])
