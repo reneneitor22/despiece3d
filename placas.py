@@ -793,11 +793,14 @@ def marcar_envolvente(placas, mesh, holgura=None):
     for k, p in enumerate(placas):
         n = np.asarray(p['normal'], dtype=float)
         n = n / np.linalg.norm(n)
+        # La placa vive en el plano MEDIO del elemento: el rayo sale del paño, no
+        # del centro, o choca con su propio muro (IFC FZK-Haus: 0 de 17 afuera).
+        sale = float(p.get('espesor_real') or 0.0) / 2.0 + holgura
         for sp in _puntos_de_muestra(p['poly']):
             L = np.array([sp.x, sp.y, 0.0, 1.0])
             w = (p['a_mundo'] @ L)[:3]
             for signo in (1.0, -1.0):
-                origenes.append(w + n * signo * holgura)
+                origenes.append(w + n * signo * sale)
                 direcciones.append(n * signo)
                 dueno.append(k)
     if not origenes:

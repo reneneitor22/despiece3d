@@ -1426,3 +1426,27 @@ class GrabadoNoPisaCorte(unittest.TestCase):
         import exportar
         col = {'geo': box(0, 0, 100, 60), 'guia': box(20, 20, 30, 30)}
         self.assertEqual([c for _, c in exportar._trazos_grabado(col)], [True])
+
+
+class EnvolventeDesdeElPano(Base):
+    """5 oct 2026: "Solo la envolvente" en FZK-Haus (IFC) dejaba 0 de 17 placas.
+    La placa vive en el plano medio del muro y el rayo salia a 1 cm de ahi: con
+    un muro de 24 cm chocaba con el mismo muro y todo quedaba "de dentro"."""
+
+    def test_muros_gruesos_de_fachada_se_quedan(self):
+        import placas
+        from despiece import Config
+        from estructura import despiece_estructural
+        e = 0.4
+        m = trimesh.util.concatenate([
+            _caja(0, 0, 0, 10, 8, 0.2),                         # losa de piso
+            _caja(0, 0, 0.2, 10, e, 3), _caja(0, 8 - e, 0.2, 10, 8, 3),
+            _caja(0, e, 0.2, e, 8 - e, 3), _caja(10 - e, e, 0.2, 10, 8 - e, 3),
+            _caja(5 - e / 2, e, 0.2, 5 + e / 2, 8 - e, 3),      # muro interior
+            _caja(0, 0, 3, 10, 8, 3.2)])                        # techo
+        cfg = Config(100, 2.0, 0.15, (900, 600), unidades_modelo='m')
+        todo, _ = despiece_estructural(m.copy(), cfg, con_uniones=False)
+        caja, info = despiece_estructural(m.copy(), cfg, con_uniones=False,
+                                          solo_envolvente=True)
+        self.assertFalse(info.get('error'), info.get('error'))
+        self.assertEqual(len(caja), len(todo) - 1)   # se va solo el muro interior

@@ -1134,18 +1134,23 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
 PAGINA = r"""<!doctype html><html lang="es"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Despiece 3D</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2315151a'/%3E%3Crect x='10' y='10' width='12' height='12' rx='2.6' fill='none' stroke='%23fff' stroke-width='2.4'/%3E%3C/svg%3E">
-<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2315151a'/%3E%3Crect x='10' y='10' width='12' height='12' rx='2.6' fill='none' stroke='%23fff' stroke-width='2.4'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='300 270 480 540'%3E%3Crect x='320' y='290' width='110' height='500' fill='%23D8321F'/%3E%3Cpath d='M444,325 L540,325 A215,215 0 0 1 540,755 L444,755' fill='none' stroke='%2315181C' stroke-width='70'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='300 270 480 540'%3E%3Crect x='320' y='290' width='110' height='500' fill='%23D8321F'/%3E%3Cpath d='M444,325 L540,325 A215,215 0 0 1 540,755 L444,755' fill='none' stroke='%2315181C' stroke-width='70'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@700&family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
 <style>
 /* Claro siempre, a proposito: el archivo que sale de aqui se manda a un taller
    y se paga. Una pantalla negra se lee como herramienta de juguete; el papel
    blanco se lee como plano. `color-scheme:light` ademas evita que el sistema
    en modo oscuro pinte los <select> y los <input> de negro por su cuenta. */
 :root{
- --bg:#f6f6f3; --card:#fff; --linea:#e6e6e0; --linea2:#d6d6ce;
- --txt:#15151a; --tenue:#6c6c76; --tenue2:#8c8c96;
- --acento:#1d4ed8; --acentobg:#eef2ff;
- --corte:#dc2626; --grabado:#1d4ed8; --marcado:#15803d;
+ --bg:#EDEFF1; --card:#F8F9FA; --linea:#DDE1E5; --linea2:#C9CED4;
+ --txt:#15181C; --tenue:#5A626C; --tenue2:#6B737D;
+ --acento:#D8321F; --acentobg:#F8E9E6;
+ --corte:#D8321F; --grabado:#1F5FD1; --marcado:#1E8A4C;
+ --display:'Archivo Narrow','Arial Narrow',sans-serif;
+ --mono:'IBM Plex Mono',ui-monospace,monospace;
  --aviso:#92400e; --avisobg:#fffbeb; --avisoln:#fde68a;
  --ok:#15803d; --okbg:#f0fdf4; --okln:#bbf7d0;
  --sombra:0 1px 2px rgba(16,16,24,.05),0 1px 3px rgba(16,16,24,.04);
@@ -1154,23 +1159,22 @@ PAGINA = r"""<!doctype html><html lang="es"><meta charset="utf-8">
 *{box-sizing:border-box}
 html,body{background:var(--bg)}
 body{margin:0;color:var(--txt);-webkit-font-smoothing:antialiased;
- font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif}
+ font:400 15px/1.6 "IBM Plex Sans",system-ui,sans-serif}
 .wrap{max-width:940px;margin:0 auto;padding:56px 20px 110px}
 header{margin-bottom:34px}
 .marca{display:flex;align-items:center;gap:10px;margin-bottom:14px}
-.marca i{width:26px;height:26px;border-radius:7px;background:var(--txt);position:relative;flex:none}
-.marca i::after{content:"";position:absolute;inset:7px;border:1.5px solid #fff;border-radius:2px}
-.marca span{font-size:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--tenue)}
+.marca i{width:28px;height:32px;flex:none;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='300 270 480 540'%3E%3Crect x='320' y='290' width='110' height='500' fill='%23D8321F'/%3E%3Cpath d='M444,325 L540,325 A215,215 0 0 1 540,755 L444,755' fill='none' stroke='%2315181C' stroke-width='70'/%3E%3C/svg%3E") center/contain no-repeat}
+.marca span{font:500 12px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--tenue)}
 .marca .by{font-size:11px;font-weight:500;letter-spacing:.03em;text-transform:none;color:var(--tenue2);
  border-left:1px solid var(--linea2);padding-left:10px}
-h1{font-size:36px;line-height:1.12;letter-spacing:-.03em;margin:0 0 10px;font-weight:640}
+h1{font:700 clamp(40px,8vw,56px)/.98 var(--display);letter-spacing:-.01em;margin:0 0 12px}
 .lead{color:var(--tenue);margin:0;max-width:62ch;font-size:16px}
-.card{background:var(--card);border:1px solid var(--linea);border-radius:16px;padding:24px;
+.card{background:var(--card);border:1px solid var(--linea);border-radius:4px;padding:24px;
  margin-bottom:16px;box-shadow:var(--sombra)}
-.card h2{font-size:15px;margin:0 0 4px;font-weight:640;letter-spacing:-.01em}
+.card h2{font:700 22px var(--display);margin:0 0 4px}
 .card h2+.sub{margin:0 0 18px;color:var(--tenue);font-size:13.5px}
-.drop{border:1.5px dashed var(--linea2);border-radius:13px;padding:38px 20px;text-align:center;
- cursor:pointer;transition:border-color .15s,background .15s;background:#fcfcfa}
+.drop{border:1.5px dashed var(--linea2);border-radius:4px;padding:38px 20px;text-align:center;
+ cursor:pointer;transition:border-color .15s,background .15s;background:var(--card)}
 .drop:hover,.drop.on{border-color:var(--acento);background:var(--acentobg)}
 .drop b{display:block;font-size:16px;margin-bottom:4px;font-weight:600}
 /* Ese `b` de arriba es el titulo "Arrastra tu modelo aqui" y es de BLOQUE. Un
@@ -1185,29 +1189,29 @@ h1{font-size:36px;line-height:1.12;letter-spacing:-.03em;margin:0 0 10px;font-we
 label{display:block;font-size:11.5px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;
  color:var(--tenue2);margin-bottom:6px}
 input:not([type=radio]):not([type=checkbox]):not([type=color]),select{
- width:100%;min-width:0;padding:10px 12px;border:1px solid var(--linea2);border-radius:10px;
+ width:100%;min-width:0;padding:10px 12px;border:1px solid var(--linea2);border-radius:4px;
  background:#fff;color:var(--txt);font:inherit;font-size:14px;appearance:none;
  background-image:none}
 select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236c6c76' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
  background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
 input:focus,select:focus{outline:2px solid var(--acento);outline-offset:1px;border-color:transparent}
-.seg{display:flex;border:1px solid var(--linea2);border-radius:10px;overflow:hidden;background:#fff}
+.seg{display:flex;border:1px solid var(--linea2);border-radius:4px;overflow:hidden;background:#fff}
 .seg label{flex:1;margin:0;padding:10px 6px;text-align:center;cursor:pointer;font-size:13px;
  color:var(--tenue);text-transform:none;letter-spacing:0;font-weight:550;transition:background .12s}
-.seg label:hover{background:#f4f4f0}
+.seg label:hover{background:var(--linea)}
 .seg input{position:absolute;opacity:0;pointer-events:none}
 .seg label:has(input:checked){background:var(--txt);color:#fff}
 .seg label+label{border-left:1px solid var(--linea2)}
-button.go{margin-top:24px;width:100%;padding:14px;border:0;border-radius:12px;background:var(--acento);
- color:#fff;font:inherit;font-weight:640;font-size:15px;cursor:pointer;transition:opacity .15s}
-button.go:hover:not(:disabled){opacity:.9}
-button.go:disabled{background:#e9e9e4;color:var(--tenue2);cursor:default}
-details.taller{background:var(--card);border:1px solid var(--linea);border-radius:16px;
+button.go{margin-top:24px;width:100%;padding:14px;border:0;border-radius:4px;background:var(--txt);
+ color:#fff;font:700 20px var(--display);letter-spacing:.02em;cursor:pointer;transition:opacity .15s}
+button.go:hover:not(:disabled){background:var(--corte)}
+button.go:disabled{background:var(--linea);color:var(--tenue2);cursor:default}
+details.taller{background:var(--card);border:1px solid var(--linea);border-radius:4px;
  margin-bottom:16px;box-shadow:var(--sombra)}
 details.taller>summary{list-style:none;cursor:pointer;padding:18px 24px;display:flex;
  align-items:center;justify-content:space-between;gap:12px}
 details.taller>summary::-webkit-details-marker{display:none}
-details.taller>summary b{font-size:15px;font-weight:640;letter-spacing:-.01em}
+details.taller>summary b{font:700 20px var(--display)}
 details.taller>summary small{display:block;color:var(--tenue);font-weight:400;font-size:13.5px;margin-top:2px}
 details.taller>summary .chev{color:var(--tenue2);font-size:12px;flex:none}
 details.taller[open]>summary .chev{transform:rotate(180deg)}
@@ -1224,16 +1228,16 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
 .nota{color:var(--tenue);font-size:12.5px;margin:14px 0 0;line-height:1.5}
 .pista{color:var(--tenue);font-size:13.5px;margin:12px 0 18px}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px}
-.kpi{background:var(--card);border:1px solid var(--linea);border-radius:13px;padding:14px 16px;
+.kpi{background:var(--card);border:1px solid var(--linea);border-radius:4px;padding:14px 16px;
  box-shadow:var(--sombra)}
-.kpi b{display:block;font-size:22px;letter-spacing:-.02em;font-weight:620}
+.kpi b{display:block;font:500 22px var(--mono)}
 .kpi span{font-size:12px;color:var(--tenue2)}
 .aviso{background:var(--avisobg);border:1px solid var(--avisoln);color:var(--aviso);
- border-radius:12px;padding:13px 16px;margin-bottom:12px;font-size:13.5px;line-height:1.5}
+ border-radius:4px;padding:13px 16px;margin-bottom:12px;font-size:13.5px;line-height:1.5}
 .aviso.ok{background:var(--okbg);border-color:var(--okln);color:var(--ok)}
 .aviso.gris{background:transparent;border-color:var(--linea);color:var(--tenue)}
 .acciones{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}
-.btn{display:inline-block;padding:11px 18px;border-radius:11px;text-decoration:none;font-size:14px;
+.btn{display:inline-block;padding:11px 18px;border-radius:4px;text-decoration:none;font-size:14px;
  font-weight:600;border:1px solid var(--linea2);color:var(--txt);background:#fff}
 .btn:hover{border-color:var(--tenue2)}
 .btn.pri{background:var(--txt);color:#fff;border-color:var(--txt)}
@@ -1243,7 +1247,7 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
 .archivos a:hover{color:var(--txt);border-color:var(--tenue2)}
 .hoja h3{font-size:12px;margin:0 0 12px;color:var(--tenue2);font-weight:650;
  text-transform:uppercase;letter-spacing:.06em}
-.hoja svg{width:100%;height:auto;background:#fff;border:1px solid var(--linea);border-radius:10px}
+.hoja svg{width:100%;height:auto;background:#fff;border:1px solid var(--linea);border-radius:4px}
 .leyenda{display:flex;gap:18px;font-size:12.5px;color:var(--tenue);margin:4px 0 18px;flex-wrap:wrap}
 .leyenda i{display:inline-block;width:20px;height:0;border-top:2px solid;margin-right:7px;vertical-align:middle}
 .spin{display:inline-block;width:15px;height:15px;border:2px solid #ffffff59;border-top-color:#fff;
@@ -1262,9 +1266,9 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
      white-space:pre-line;text-align:left;line-height:1.5}
 [hidden]{display:none!important}
 .par{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 16px}
-@media(max-width:640px){.par{grid-template-columns:1fr}.wrap{padding-top:34px}h1{font-size:29px}
+@media(max-width:640px){.par{grid-template-columns:1fr}.wrap{padding-top:34px}
  .capa{grid-template-columns:1fr 44px 1fr}}
-.vista{background:var(--card);border:1px solid var(--linea);border-radius:13px;padding:14px;
+.vista{background:var(--card);border:1px solid var(--linea);border-radius:4px;padding:14px;
  box-shadow:var(--sombra)}
 .vista h4{margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
  color:var(--tenue2);font-weight:650}
@@ -1323,6 +1327,9 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
    <select id="espesorSel">
     <option value="1">Cartón batería 1 mm</option>
     <option value="2" selected>Cartón batería 2 mm</option>
+    <option value="1">Cartón gris (gris pardo) 1 mm</option>
+    <option value="2">Cartón gris (gris pardo) 2 mm</option>
+    <option value="3">Cartón gris (gris pardo) 3 mm</option>
     <option value="1">MDF 1 mm</option>
     <option value="2">MDF 2 mm</option>
     <option value="3">MDF 3 mm</option>
@@ -1382,6 +1389,8 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
    <label class="chk"><input type="checkbox" id="envolvente"> Solo la envolvente</label>
    <label class="chk" style="margin-top:8px"><input type="checkbox" id="macizos">
     Laminar escaleras y muebles</label>
+   <label class="chk" style="margin-top:8px"><input type="checkbox" id="muros_huecos">
+    Muros huecos (para pasar instalaciones)</label>
    <label class="chk" style="margin-top:8px"><input type="checkbox" id="planta_grabada" checked>
     Grabar la planta sobre la losa</label>
    <label class="chk" style="margin-top:8px"><input type="checkbox" id="no_juntar" checked>
@@ -1661,6 +1670,7 @@ $('go').onclick=async()=>{
   fd.append('uniones',document.querySelector('input[name=un]:checked').value);
   fd.append('envolvente',$('envolvente').checked?'1':'0');
   fd.append('macizos',$('macizos').checked?'1':'0');
+  fd.append('muros_huecos',$('muros_huecos').checked?'1':'0');
   fd.append('planta_grabada',$('planta_grabada').checked?'1':'0');
   fd.append('juntar_plantas',$('no_juntar').checked?'0':'1');
   fd.append('bastidor',$('bastidor').value||'0');
