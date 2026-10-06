@@ -1450,3 +1450,22 @@ class EnvolventeDesdeElPano(Base):
                                           solo_envolvente=True)
         self.assertFalse(info.get('error'), info.get('error'))
         self.assertEqual(len(caja), len(todo) - 1)   # se va solo el muro interior
+
+
+class Instructivo(unittest.TestCase):
+    """El zip lleva la guia tambien en PDF, para el alumno que no abre HTML."""
+
+    @unittest.skipUnless(os.path.exists(__import__('app').CHROME), 'sin Chrome')
+    def test_zip_trae_instructivo_pdf(self):
+        import app
+        d = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(d, 'guia.html'), 'w', encoding='utf-8') as f:
+                f.write('<!doctype html><meta charset="utf-8"><h1>Cómo se arma</h1>')
+            open(os.path.join(d, 'casa_hoja01.dxf'), 'w').write('0\nEOF\n')
+            z = zipfile.ZipFile(app._empacar(d, 'casa'))
+            self.assertIn(app.INSTRUCTIVO, z.namelist())
+            self.assertTrue(z.read(app.INSTRUCTIVO).startswith(b'%PDF'))
+            self.assertNotIn(app.INSTRUCTIVO, os.listdir(d))   # suelto no: choca con el de corte
+        finally:
+            shutil.rmtree(d, ignore_errors=True)

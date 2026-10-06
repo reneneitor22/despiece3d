@@ -1001,12 +1001,38 @@ def _descargables(carpeta, job):
             if f.endswith(('.dxf', '.dwg', '.pdf'))]
 
 
+CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+INSTRUCTIVO = 'Instructivo de armado.pdf'
+
+
+def _instructivo(guia):
+    """guia.html -> PDF con Chrome headless. None si no hay Chrome o falla:
+    el despiece ya salio y la guia en HTML va en el zip de todos modos."""
+    if not (os.path.exists(guia) and os.path.exists(CHROME)):
+        return None
+    pdf = os.path.join(tempfile.mkdtemp(), INSTRUCTIVO)
+    try:
+        subprocess.run([CHROME, '--headless', '--disable-gpu', '--no-pdf-header-footer',
+                        '--print-to-pdf=' + pdf, 'file://' + quote(os.path.abspath(guia))],
+                       capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        dbg.log('export.instructivo', nivel='error', err=str(e))
+        return None
+    return pdf if os.path.exists(pdf) and os.path.getsize(pdf) > 0 else None
+
+
 def _empacar(carpeta, nombre):
     zip_path = os.path.join(carpeta, '%s_despiece.zip' % re.sub(r'[^\w\-]', '_', nombre))
+    # El PDF va solo dentro del zip: suelto en la carpeta se confundiria con el de corte.
+    pdf = _instructivo(os.path.join(carpeta, 'guia.html'))
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
         for f in sorted(os.listdir(carpeta)):
             if f.endswith(('.dxf', '.dwg', '.pdf', '.svg')) or f in ('guia.html', 'debug.log'):
                 z.write(os.path.join(carpeta, f), f)
+        if pdf:
+            z.write(pdf, INSTRUCTIVO)
+    if pdf:
+        shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
     return zip_path
 
 
