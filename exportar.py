@@ -2,6 +2,7 @@
 """Salidas: DXF por hoja (laser) + SVG/HTML imprimible (corte a mano) + guia de armado."""
 import html
 import os
+import re
 import ezdxf
 from shapely.geometry import LineString
 
@@ -706,6 +707,156 @@ ol.pasos li{margin:4px 0}
                  n_plantas=info.get('n_plantas', 1),
                  avisos=avisos, iso_a=iso_armada, iso_e=iso_explotada,
                  filas=filas, laminas=laminas, base=base, cierre=cierre)
+
+
+# ------------------------------------------------ instructivo de armado
+def orden_natural(texto):
+    """'M2a' antes que 'M10a': el orden alfabetico revolvia la lista."""
+    return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', str(texto))]
+
+
+GRUPOS = (('L', 'Base'), ('M', 'Muros'), ('T', 'Techo'))
+
+
+def _grupo(pid):
+    for letra, _ in GRUPOS:
+        if pid.startswith(letra) and not pid.startswith('BA'):
+            return letra
+    return 'X'                             # escaleras, muebles, bastidor
+
+
+def pasos_de_armado(piezas):
+    """[(rotulo, grupo, [piezas])] en el orden en que se pegan: planta por planta y
+    dentro de cada una base, muros, techo y al final lo macizo."""
+    orden = [l for l, _ in GRUPOS] + ['X']
+    pasos = {}
+    for p in piezas:
+        pid = p.get('partida_de') or p['id']
+        clave = (p.get('planta', 1), orden.index(_grupo(str(pid))))
+        pasos.setdefault(clave, []).append(p)
+    return [(pasos[k][0].get('rotulo', 'PLANTA %d' % k[0]), orden[k[1]],
+             sorted(pasos[k], key=lambda p: orden_natural(p['id'])))
+            for k in sorted(pasos)]
+
+
+def instructivo_estructural(piezas, cfg, nombre, info, n_hojas, grandes=(), huecos=False):
+    """Instructivo para imprimir (carta): un paso por planta y grupo, cada uno con
+    su dibujo -- lo ya armado en gris, lo nuevo en color con su numero -- y la
+    lista pieza -> hoja. Sale de info['placas'] (la geometria real), no de las
+    medidas: con el cubo (2-oct) unas instrucciones sacadas de las medidas
+    pusieron las piezas donde no iban."""
+    from isometrica import vista
+
+    placas = info.get('placas', [])
+    nombre_grupo = dict(GRUPOS, X='Escaleras y muebles')
+    pasos = pasos_de_armado(piezas)
+    a_tope = not info.get('n_uniones')
+    hay_techo = any(g == 'T' for _, g, _ in pasos)
+    hay_ranuras = any(p.get('ranuras') for p in piezas)
+    partidas = sorted({p['partida_de'] for p in piezas if p.get('partida_de')}, key=orden_natural)
+
+    # Lo general, solo lo que trae ESTE modelo: hablarle de techos o dientes que
+    # no tiene lo pone a buscar algo que no existe.
+    reglas = ['Cada pieza trae su número <b>grabado</b>. Búscala por número, no por forma.']
+    if a_tope:
+        reglas.append('Todo va <b>a tope</b>: poco pegamento blanco en el canto y sostén '
+                      'cada muro a escuadra unos segundos.')
+    else:
+        reglas.append('Los <b>dientes</b> entran a presión en las ranuras de la otra pieza. '
+                      'Si aprieta de más, lija el diente; no fuerces la lámina.')
+    if hay_ranuras:
+        reglas.append('Donde dos muros se cruzan, cada uno trae una <b>ranura</b> a media '
+                      'altura: se encajan uno en el otro.')
+    reglas.append('La base trae <b>grabada la planta de sus muros</b>, puertas incluidas: '
+                  'cada muro va sobre su línea. Si no coincide, la pieza va al revés o es de otra planta.')
+    if huecos:
+        reglas.append('Los muros son <b>huecos</b>: cada uno son dos caras (<b>a</b> y <b>b</b>) '
+                      'con un espacio en medio para pasar instalaciones. Las tiras '
+                      '<b>-B</b> van de canto entre las dos caras de la losa.')
+    if partidas:
+        reglas.append('No cupieron enteras en la hoja y vienen en partes (.1, .2…): '
+                      '<b>%s</b>. Pega las partes antes de armar.'
+                      % html.escape(', '.join(map(str, partidas))))
+
+    hechas, bloques = set(), []
+    for n, (rotulo, grupo, lista) in enumerate(pasos, 1):
+        ids = {str(p.get('partida_de') or p['id']) for p in lista}
+        dibujo = ''
+        nuevas = [pl for pl in placas if pl['id'] in ids]
+        if nuevas:
+            dibujo = vista([pl for pl in placas if pl['id'] in hechas] + nuevas,
+                           ancho=760, resaltar=ids)
+        hechas |= ids
+        filas = ''.join(
+            '<tr><td class="id">%s</td><td>%.0f × %.0f mm</td><td>%s</td></tr>'
+            % (html.escape(str(p['id'])),
+               p['poly'].bounds[2] - p['poly'].bounds[0],
+               p['poly'].bounds[3] - p['poly'].bounds[1],
+               p.get('hoja') or '—')
+            for p in lista)
+        titulo = rotulo.title() if rotulo else ''
+        bloques.append(
+            '<section class="paso"><h2><span>%d</span>%s · %s <small>%d pieza%s</small></h2>'
+            '<div class="cuerpo"><div class="dib">%s</div>'
+            '<table><thead><tr><th>Pieza</th><th>Medida</th><th>Hoja</th></tr></thead>'
+            '<tbody>%s</tbody></table></div></section>'
+            % (n, html.escape(titulo), nombre_grupo[grupo], len(lista),
+               '' if len(lista) == 1 else 's', dibujo, filas))
+
+    # Para el taller, no para quien arma: van al final y chiquitos.
+    notas = ''
+    if grandes:
+        notas += ('<p class="alerta">%d pieza(s) no cupieron en la hoja y no se cortaron: %s.</p>'
+                  % (len(grandes), html.escape(', '.join(map(str, grandes)))))
+    for a in info.get('avisos', []):
+        notas += '<p>%s</p>' % html.escape(str(a))
+    if notas:
+        notas = '<section class="notas"><h3>Notas del archivo</h3>%s</section>' % notas
+
+    return """<!doctype html><meta charset="utf-8">
+<title>Instructivo de armado — %(nombre)s</title>
+<style>
+@page{size:letter;margin:12mm}
+:root{color-scheme:light}*{box-sizing:border-box}
+body{margin:0;font:12.5px/1.5 -apple-system,BlinkMacSystemFont,Helvetica,Arial;color:#18181b;background:#fff}
+h1{font-size:24px;letter-spacing:-.02em;margin:0 0 2px}
+.sub{color:#71717a;margin:0 0 14px}
+.antes{border:2px solid #16a34a;border-radius:10px;padding:10px 14px;margin:0 0 14px}
+.antes b.t{display:block;color:#15803d;font-size:13px;margin-bottom:2px}
+.colores{display:flex;gap:18px;flex-wrap:wrap;margin-top:6px}
+.colores i{display:inline-block;width:22px;height:0;border-top:2px solid;margin-right:6px;vertical-align:middle}
+.portada svg{width:100%%;height:auto;max-height:118mm}
+ul.reglas{margin:10px 0 0;padding-left:18px}ul.reglas li{margin:3px 0}
+.paso{break-inside:avoid;border-top:1px solid #e4e4e7;padding:12px 0 6px}
+.paso h2{font-size:15px;margin:0 0 8px;display:flex;align-items:center;gap:9px}
+.paso h2 span{background:#18181b;color:#fff;border-radius:50%%;width:26px;height:26px;display:inline-grid;place-items:center;font-size:13px}
+.paso h2 small{color:#a1a1aa;font-weight:400;font-size:12px}
+.cuerpo{display:grid;grid-template-columns:1fr 210px;gap:14px;align-items:start}
+.dib svg{width:100%%;height:auto;max-height:105mm}
+table{width:100%%;border-collapse:collapse}
+th,td{text-align:left;padding:2px 6px;border-bottom:1px solid #f0f0f2;font-size:11.5px}
+th{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:#71717a}
+td.id{font-family:ui-monospace,Menlo,monospace;font-weight:700}
+.notas{break-before:page;color:#71717a;font-size:11px}.notas h3{font-size:12px;color:#18181b}
+.alerta{color:#b45309;font-weight:600}
+</style>
+<div class="portada">
+<h1>%(nombre)s</h1>
+<p class="sub">Instructivo de armado · escala 1:%(escala)d · lámina %(espesor)g mm · %(n)d piezas en %(hojas)d hoja%(s)s</p>
+<div class="antes"><b class="t">Antes de cortar: pide que graben la capa MARCADO</b>
+Ahí va el número de cada pieza. Sin él no hay forma de saber cuál es cuál.
+<div class="colores"><span><i style="color:#e11d48"></i>CORTE: se corta</span>
+<span><i style="color:#2563eb;border-top-style:dashed"></i>GRABADO: dónde apoya otra pieza</span>
+<span><i style="color:#16a34a"></i>MARCADO: número de pieza</span></div></div>
+%(armada)s
+<ul class="reglas">%(reglas)s</ul>
+</div>
+%(pasos)s
+%(notas)s""" % dict(nombre=html.escape(nombre), escala=int(cfg.escala), espesor=cfg.espesor_mm,
+                    n=len(piezas), hojas=n_hojas, s='' if n_hojas == 1 else 's',
+                    armada=vista(placas, ancho=760) if placas else '',
+                    reglas=''.join('<li>%s</li>' % r for r in reglas),
+                    pasos=''.join(bloques), notas=notas)
 
 
 # ------------------------------------------------------------------- PDF

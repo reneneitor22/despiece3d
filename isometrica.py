@@ -42,8 +42,12 @@ def _visible(p, anillos):
            float(np.dot(p['normal'], [-0.577, -0.577, -0.577])) > 0.05
 
 
-def vista(placas, ancho=760, explotar=0.0, etiquetas=True, titulo=''):
-    """SVG isometrico. `explotar` separa cada placa sobre su normal (en unidades del modelo)."""
+def vista(placas, ancho=760, explotar=0.0, etiquetas=True, titulo='', resaltar=None):
+    """SVG isometrico. `explotar` separa cada placa sobre su normal (en unidades del modelo).
+
+    `resaltar` (ids): esas van en color y con numero; las demas en gris, sin numero.
+    Es el paso del instructivo: lo ya armado de fondo y lo que se pega ahora encima.
+    """
     cuerpos = []
     for p in placas:
         d = explotar * (1.0 if float(np.dot(p['normal'], [0.4, 0.5, 0.77])) >= 0 else -1.0)
@@ -72,8 +76,10 @@ def vista(placas, ancho=760, explotar=0.0, etiquetas=True, titulo=''):
 
     out = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="100%%">'
            % (ancho, alto)]
+    rotulos = []
     for _, p, anillos in cuerpos:
-        relleno, borde = COLOR.get(p['tipo'], ('#eee', '#666'))
+        fondo = resaltar is not None and p['id'] not in resaltar
+        relleno, borde = ('#f1f1f3', '#b4b4bb') if fondo else COLOR.get(p['tipo'], ('#eee', '#666'))
         d = []
         for W in anillos:
             pts = tx(W)
@@ -81,13 +87,16 @@ def vista(placas, ancho=760, explotar=0.0, etiquetas=True, titulo=''):
         out.append('<path d="%s" fill="%s" fill-rule="evenodd" stroke="%s" '
                    'stroke-width="1.1" stroke-linejoin="round" fill-opacity="%s"/>'
                    % (' '.join(d), relleno, borde, '0.55' if explotar else '1'))
-        if etiquetas and (explotar or _visible(p, anillos)):
+        if etiquetas and not fondo and (explotar or _visible(p, anillos)):
             c = np.mean(np.vstack(anillos), axis=0).reshape(1, 3)
             x, y = tx(c)[0]
-            out.append('<text x="%.1f" y="%.1f" font-family="Helvetica,Arial" font-size="12" '
+            # los numeros al final, encima de todo: si van con su placa, la de
+            # enfrente los tapa
+            rotulos.append('<text x="%.1f" y="%.1f" font-family="Helvetica,Arial" font-size="12" '
                        'font-weight="600" fill="#111" text-anchor="middle" '
                        'dominant-baseline="central" paint-order="stroke" stroke="#fff" '
                        'stroke-width="3">%s</text>' % (x, y, p['id']))
+    out.extend(rotulos)
     if titulo:
         out.append('<text x="14" y="18" font-family="Helvetica,Arial" font-size="12" '
                    'fill="#888">%s</text>' % titulo)

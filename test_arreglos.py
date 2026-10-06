@@ -1469,3 +1469,21 @@ class Instructivo(unittest.TestCase):
             self.assertNotIn(app.INSTRUCTIVO, os.listdir(d))   # suelto no: choca con el de corte
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+class InstructivoPasos(unittest.TestCase):
+    """El instructivo arma planta por planta (base, muros, techo) y en orden
+    natural: con orden alfabetico M10a salia antes que M1a."""
+
+    def test_orden_y_pasos(self):
+        import exportar
+        from shapely.geometry import box
+        pz = lambda i, planta: {'id': i, 'planta': planta, 'rotulo': 'PLANTA %d' % planta,
+                                'poly': box(0, 0, 1, 1)}
+        piezas = [pz('M10a', 1), pz('T1', 2), pz('M1a', 1), pz('L2', 2), pz('L1', 1),
+                  pz('M2a', 1), dict(pz('L1.2', 1), partida_de='L1')]
+        pasos = exportar.pasos_de_armado(piezas)
+        self.assertEqual([(r, g) for r, g, _ in pasos],
+                         [('PLANTA 1', 'L'), ('PLANTA 1', 'M'), ('PLANTA 2', 'L'), ('PLANTA 2', 'T')])
+        self.assertEqual([p['id'] for p in pasos[1][2]], ['M1a', 'M2a', 'M10a'])
+        self.assertEqual([p['id'] for p in pasos[0][2]], ['L1', 'L1.2'])

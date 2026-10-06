@@ -1024,7 +1024,9 @@ def _instructivo(guia):
 def _empacar(carpeta, nombre):
     zip_path = os.path.join(carpeta, '%s_despiece.zip' % re.sub(r'[^\w\-]', '_', nombre))
     # El PDF va solo dentro del zip: suelto en la carpeta se confundiria con el de corte.
-    pdf = _instructivo(os.path.join(carpeta, 'guia.html'))
+    # Modo casa trae su instructivo paso a paso; terreno imprime la guia de pantalla.
+    fuente = os.path.join(carpeta, 'instructivo.html')
+    pdf = _instructivo(fuente if os.path.exists(fuente) else os.path.join(carpeta, 'guia.html'))
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
         for f in sorted(os.listdir(carpeta)):
             if f.endswith(('.dxf', '.dwg', '.pdf', '.svg')) or f in ('guia.html', 'debug.log'):
@@ -1130,6 +1132,10 @@ def _estructural(m, cfg, carpeta, job, nombre, campos):
     html = exportar.guia_estructural(hojas, piezas, cfg, svgs, nombre, grandes, stats, info,
                                      iso_a, iso_e)
     open(os.path.join(carpeta, 'guia.html'), 'w', encoding='utf-8').write(html)
+    with dbg.etapa('export.instructivo'):
+        ins = exportar.instructivo_estructural(piezas, cfg, nombre, info, len(hojas),
+                                               grandes, huecos=huecos)
+    open(os.path.join(carpeta, 'instructivo.html'), 'w', encoding='utf-8').write(ins)
     zip_path = _empacar(carpeta, nombre)
     dbg.log('resumen', ms_total=round((time.perf_counter() - _t0) * 1000, 1),
             n_piezas=len(piezas), n_hojas=len(hojas),
