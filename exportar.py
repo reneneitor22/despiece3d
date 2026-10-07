@@ -12,7 +12,6 @@ from shapely.geometry import LineString
 OPS_DEFAULT = {
     'corte':   {'capa': 'CORTE',   'rgb': (255, 0, 0)},
     'grabado': {'capa': 'GRABADO', 'rgb': (0, 0, 255)},
-    'marcado': {'capa': 'MARCADO', 'rgb': (0, 128, 0)},
 }
 # Marco, tabla, rotulos y notas: se ven al abrir el plano y NO se cortan.
 # Defpoints y no un nombre propio porque es la capa que AutoCAD nunca imprime y
@@ -150,10 +149,16 @@ def _anillos_de_corte(colocadas):
 ANCHO_LETRA = 0.75
 
 
-def _rotulo(geo, texto):
-    """(x, y, alto, giro) del numero de pieza: el punto MAS ADENTRO de la pieza
-    (polylabel, no representative_point, que cae pegado a los huecos) y la letra
-    mas grande que cabe entera ahi, derecha o girada 90 grados.
+# Del numero de pieza en la esquina al canto: menos y el laser lo quema junto con
+# el corte en carton.
+MARGEN_ESQUINA_MM = 1.5
+
+
+def _rotulo(geo, texto, guia=None):
+    """(x, y, alto, giro) del numero de pieza: en la ESQUINA de la pieza mas
+    cercana donde la letra quepa entera sin pisar el corte ni la huella grabada
+    (David, el del corte, 6 oct 2026: en el centro se ve en la maqueta armada).
+    Si no cabe en ninguna esquina, el punto MAS ADENTRO de la pieza (polylabel).
 
     Antes el alto salia del ancho de la caja y nadie revisaba que cupiera: un M12
     de 6 mm sobre una tira de 3.1 mm (FZK) y 65 de 291 fuera de su pieza (Merida).
@@ -166,7 +171,34 @@ def _rotulo(geo, texto):
     dentro = p.buffer(-0.3)                      # que no pise el corte
     tope = max(2.5, min(6.0, (p.bounds[2] - p.bounds[0]) / 8.0))
     n = max(1, len(str(texto)))
-    for alto in [a for a in (6.0, 5.0, 4.0, 3.5, 3.0, 2.5, 2.0, 1.5) if a <= tope]:
+    tamanos = [a for a in (6.0, 5.0, 4.0, 3.5, 3.0, 2.5, 2.0, 1.5) if a <= tope]
+
+    # Esquina: de cada esquina de la caja de la pieza se camina hacia el centro
+    # hasta que la letra cabe. Gana la que menos camina.
+    orilla = p.buffer(-MARGEN_ESQUINA_MM)
+    huella = guia.buffer(0.5) if guia is not None and not guia.is_empty else None
+    x0, y0, x1, y1 = p.bounds
+    for alto in tamanos:
+        w = ANCHO_LETRA * alto * n
+        mejor = None
+        for giro, (bw, bh) in ((0, (w, alto)), (90, (alto, w))):
+            for ex, ey in ((x0, y0), (x1, y0), (x0, y1), (x1, y1)):
+                # el centro de la caja arranca a media caja de la esquina
+                sx = ex + (bw / 2 if ex == x0 else -bw / 2)
+                sy = ey + (bh / 2 if ey == y0 else -bh / 2)
+                for i in range(41):
+                    t = i / 40.0
+                    if mejor is not None and t >= mejor[0]:
+                        break
+                    px, py = sx + (x - sx) * t, sy + (y - sy) * t
+                    caja = _box(px - bw / 2, py - bh / 2, px + bw / 2, py + bh / 2)
+                    if orilla.contains(caja) and (huella is None or not huella.intersects(caja)):
+                        mejor = (t, px, py, giro)
+                        break
+        if mejor is not None:
+            return mejor[1], mejor[2], alto, mejor[3]
+
+    for alto in tamanos:
         w = ANCHO_LETRA * alto * n
         for giro, (bw, bh) in ((0, (w, alto)), (90, (alto, w))):
             if dentro.contains(_box(x - bw / 2, y - bh / 2, x + bw / 2, y + bh / 2)):
@@ -222,8 +254,7 @@ def _tabla_corte(msp, cfg, ficha, ops, ancho_hoja, capa=CAPA_HOJA):
         (op['capa'], '%s  ·  RGB %d,%d,%d  ·  color %d de AutoCAD'
          % (nombre.upper(), op['rgb'][0], op['rgb'][1], op['rgb'][2],
             _aci_cercano(op['rgb'])))
-        for nombre, op in (('corte', ops['corte']), ('grabado', ops['grabado']),
-                           ('marcado', ops['marcado']))
+        for nombre, op in (('corte', ops['corte']), ('grabado', ops['grabado']))
     ]
     alto = alto_tit + fila * len(filas)
     y0 = y - alto
@@ -232,8 +263,7 @@ def _tabla_corte(msp, cfg, ficha, ops, ancho_hoja, capa=CAPA_HOJA):
         msp.add_line(p1, p2, dxfattribs={'layer': capa})
 
     def texto(txt, x, yc, h=3.0, negrita=False):
-        t = msp.add_text(str(txt), dxfattribs={'layer': capa, 'height': h,
-                                               'style': 'OpenSans-Bold' if negrita else 'Standard'})
+        t = msp.add_text(str(txt), dxfattribs={'layer': capa, 'height': h})
         t.set_placement((x, yc), align=ezdxf.enums.TextEntityAlignment.MIDDLE_LEFT)
 
     msp.add_lwpolyline([(0, y0), (ancho, y0), (ancho, y), (0, y)], close=True,
@@ -287,8 +317,8 @@ def _hueco_para_texto(col, ancho, alto, paso=3.0):
     if x1 - x0 < ancho or y1 - y0 < alto:
         return None
     guia = col.get('guia')
-    # ni encima del numero de pieza: grabado sobre marcado no se lee ninguno
-    nx, ny, nh, giro = _rotulo(g, col['pieza']['id'])
+    # ni encima del numero de pieza: grabado sobre grabado no se lee ninguno
+    nx, ny, nh, giro = _rotulo(g, col['pieza']['id'], guia)
     nw = ANCHO_LETRA * nh * len(str(col['pieza']['id']))
     nw, nh = (nw, nh) if giro == 0 else (nh, nw)
     numero = _box(nx - nw / 2 - 1, ny - nh / 2 - 1, nx + nw / 2 + 1, ny + nh / 2 + 1)
@@ -337,7 +367,7 @@ def hoja_a_dxf(colocadas, cfg, ruta, titulo, ops=None, ficha=None, marco=True,
                rotulo_zona='%s', capa_hoja=None, notas=None, cajetin=None):
     """Una hoja lista para mandar al taller.
 
-    `ops`   convencion de capas por operacion (corte / grabado / marcado).
+    `ops`   convencion de capas por operacion (corte / grabado).
     `ficha` renglones (etiqueta, valor) de la tabla de corte; None = sin tabla.
     `marco` dibuja el rectangulo del tamaño de lamina elegido.
     `rotulo_zona` formato del nombre de cada zona (las piezas traen 'zona').
@@ -359,6 +389,10 @@ def hoja_a_dxf(colocadas, cfg, ruta, titulo, ops=None, ficha=None, marco=True,
     # las cabinas nuevas.
     doc = ezdxf.new('R2004', setup=True)
     doc.header['$INSUNITS'] = 4          # milimetros
+    # Todo texto sale en Standard, y Standard trae txt.shx de AutoCAD, que
+    # LightBurn y los programas de laser no tienen: el numero de pieza no salia
+    # (David, el del corte, 6 oct 2026). Arial la tiene cualquier maquina.
+    doc.styles.get('Standard').dxf.font = 'arial.ttf'
     msp = doc.modelspace()
 
     for op in ops.values():
@@ -376,7 +410,6 @@ def hoja_a_dxf(colocadas, cfg, ruta, titulo, ops=None, ficha=None, marco=True,
 
     L_CORTE = ops['corte']['capa']
     L_GRAB = ops['grabado']['capa']
-    L_MARCA = ops['marcado']['capa']
 
     W, H = cfg.hoja
     if marco:
@@ -392,12 +425,12 @@ def hoja_a_dxf(colocadas, cfg, ruta, titulo, ops=None, ficha=None, marco=True,
         for trazo, cerrado in _trazos_grabado(col):
             msp.add_lwpolyline(trazo, close=cerrado, dxfattribs={'layer': L_GRAB})
 
-        cx, cy, alto, giro = _rotulo(col['geo'], pz['id'])
-        # El numero de pieza es MARCADO, no grabado: es lo que el alumno lee
-        # para armar, no relieve. Separarlo deja que el taller lo corra a menos
-        # potencia o lo apague sin tocar las huellas de ensamble.
+        cx, cy, alto, giro = _rotulo(col['geo'], pz['id'], col.get('guia'))
+        # El numero de pieza va en GRABADO, azul, con las huellas: asi lo pidio
+        # David, el del corte (6 oct 2026). En una capa aparte (MARCADO, verde)
+        # su programa no lo grababa en la misma pasada.
         msp.add_text(pz['id'],
-                     dxfattribs={'layer': L_MARCA, 'height': alto, 'rotation': giro}
+                     dxfattribs={'layer': L_GRAB, 'height': alto, 'rotation': giro}
                      ).set_placement((cx, cy), align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER)
 
     # Marco y rotulo de cada zona. Van en la capa HOJA: se ven al abrir el plano
@@ -448,6 +481,20 @@ def hoja_a_dxf(colocadas, cfg, ruta, titulo, ops=None, ficha=None, marco=True,
 
 
 # ------------------------------------------------------------------- SVG
+def _arial_pdf():
+    """Arial incrustada en el PDF: Helvetica no va adentro del archivo y el
+    programa del laser la cambia por la que tenga. Sin Arial, Helvetica."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    for ruta in ('/System/Library/Fonts/Supplemental/Arial.ttf',
+                 '/Library/Fonts/Arial.ttf', 'C:/Windows/Fonts/arial.ttf'):
+        if os.path.exists(ruta):
+            if 'Arial' not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont('Arial', ruta))
+            return 'Arial'
+    return 'Helvetica'
+
+
 def hoja_a_svg(colocadas, cfg, titulo, rotulo_zona='%s', notas=None,
                cajetin=None):
     W, H = cfg.hoja
@@ -481,7 +528,7 @@ def hoja_a_svg(colocadas, cfg, titulo, rotulo_zona='%s', notas=None,
         trazos = _trazos_grabado(col)
         path_de([t for t, cerrado in trazos if cerrado], '#2563eb', 0.25, punteado=True,
                 abiertos=[t for t, cerrado in trazos if not cerrado])
-        x, y, alto, giro = _rotulo(g, pz['id'])
+        x, y, alto, giro = _rotulo(g, pz['id'], col.get('guia'))
         etiquetas.append((x, y, _xml(pz['id']), alto, 'middle', giro))
     for anillos in _anillos_de_corte(colocadas):
         path_de(anillos, '#e11d48', 0.35)
@@ -514,14 +561,16 @@ def hoja_a_svg(colocadas, cfg, titulo, rotulo_zona='%s', notas=None,
         anclaje = et[4] if len(et) > 4 else 'middle'
         giro = (' transform="rotate(%d %.3f %.3f)"' % (-et[5], x, Ht - y)
                 if len(et) > 5 and et[5] else '')
-        p.append('<text x="%.3f" y="%.3f" font-family="Helvetica,Arial" font-size="%.2f" '
-                 'fill="#111" text-anchor="%s" dominant-baseline="central"%s>%s</text>'
-                 % (x, Ht - y, h, anclaje, giro, txt))
+        # el numero de pieza (el unico con giro) se graba: azul como las huellas
+        relleno = '#2563eb' if len(et) > 5 else '#111'
+        p.append('<text x="%.3f" y="%.3f" font-family="Arial,Helvetica" font-size="%.2f" '
+                 'fill="%s" text-anchor="%s" dominant-baseline="central"%s>%s</text>'
+                 % (x, Ht - y, h, relleno, anclaje, giro, txt))
     for i, nota in enumerate(notas):
-        p.append('<text x="0" y="%.2f" font-family="Helvetica,Arial" font-size="4.5" '
+        p.append('<text x="0" y="%.2f" font-family="Arial,Helvetica" font-size="4.5" '
                  'fill="#555">%s</text>' % (Ht - (H + 6 + 7.0 * (len(notas) - 1 - i)),
                                             _xml(nota)))
-    p.append('<text x="%.2f" y="%.2f" font-family="Helvetica,Arial" font-size="4" '
+    p.append('<text x="%.2f" y="%.2f" font-family="Arial,Helvetica" font-size="4" '
              'fill="#666">%s</text>' % (cfg.margen_mm, arriba + cfg.margen_mm - 3,
                                         _xml(titulo)))
     p.append('</svg>')
@@ -843,11 +892,10 @@ td.id{font-family:ui-monospace,Menlo,monospace;font-weight:700}
 <div class="portada">
 <h1>%(nombre)s</h1>
 <p class="sub">Instructivo de armado · escala 1:%(escala)d · lámina %(espesor)g mm · %(n)d piezas en %(hojas)d hoja%(s)s</p>
-<div class="antes"><b class="t">Antes de cortar: pide que graben la capa MARCADO</b>
-Ahí va el número de cada pieza. Sin él no hay forma de saber cuál es cuál.
+<div class="antes"><b class="t">Antes de cortar: pide que graben la capa GRABADO</b>
+Ahí va el número de cada pieza, en una esquina. Sin él no hay forma de saber cuál es cuál.
 <div class="colores"><span><i style="color:#e11d48"></i>CORTE: se corta</span>
-<span><i style="color:#2563eb;border-top-style:dashed"></i>GRABADO: dónde apoya otra pieza</span>
-<span><i style="color:#16a34a"></i>MARCADO: número de pieza</span></div></div>
+<span><i style="color:#2563eb;border-top-style:dashed"></i>GRABADO: dónde apoya otra pieza y número de pieza</span></div></div>
 %(armada)s
 <ul class="reglas">%(reglas)s</ul>
 </div>
@@ -876,6 +924,7 @@ def hojas_a_pdf(hojas, cfg, ruta, titulo_base):
     W, H = cfg.hoja
     c = _canvas.Canvas(ruta, pagesize=(W * MM, H * MM))
     c.setTitle(titulo_base)
+    letra = _arial_pdf()
 
     for i, colocadas in enumerate(hojas):
         c.setLineWidth(0.1 * MM)
@@ -902,9 +951,9 @@ def hojas_a_pdf(hojas, cfg, ruta, titulo_base):
                     trazo(t, cerrado)
                 c.setDash()
 
-            x, y, alto, giro = _rotulo(col['geo'], col['pieza']['id'])
-            c.setFillColorRGB(0.07, 0.07, 0.09)
-            c.setFont('Helvetica', alto * MM)
+            x, y, alto, giro = _rotulo(col['geo'], col['pieza']['id'], col.get('guia'))
+            c.setFillColorRGB(0.15, 0.39, 0.92)            # se graba, como en el DXF
+            c.setFont(letra, alto * MM)
             # drawCentredString pone la linea base; se baja media altura para
             # que el numero quede centrado en la pieza y no encima del borde.
             c.saveState()
@@ -919,7 +968,7 @@ def hojas_a_pdf(hojas, cfg, ruta, titulo_base):
                 trazo(anillo)
 
         c.setFillColorRGB(0.42, 0.42, 0.45)
-        c.setFont('Helvetica', 4 * MM)
+        c.setFont(letra, 4 * MM)
         c.drawString(cfg.margen_mm * MM, (cfg.margen_mm - 4) * MM,
                      '%s  hoja %d/%d' % (titulo_base, i + 1, len(hojas)))
         c.showPage()

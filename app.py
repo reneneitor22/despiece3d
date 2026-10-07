@@ -546,14 +546,14 @@ def _notas(ops, material, cfg):
     equivocarse de operacion.
     """
     import exportar
-    orden = [('corte', 'CORTA'), ('grabado', 'GRABA'), ('marcado', 'MARCA')]
+    orden = [('corte', 'CORTA'), ('grabado', 'GRABA')]
     legenda = '  ·  '.join(
         '%s %s' % (exportar.nombre_color(ops[k]['rgb']).upper(), verbo)
         for k, verbo in orden)
     # El archivo ya viene en ese orden, pero LightBurn y RDWorks lo reordenan
     # si el operador optimiza la ruta: se le dice tambien con palabras.
     return [legenda,
-            'PRIMERO GRABA Y MARCA  ·  AL FINAL CORTA, LOS HUECOS ANTES QUE EL CONTORNO',
+            'PRIMERO GRABA  ·  AL FINAL CORTA, LOS HUECOS ANTES QUE EL CONTORNO',
             '%s  ·  hoja %g x %g mm  ·  escala 1:%d'
             % (material or 'material sin especificar', cfg.hoja[0], cfg.hoja[1],
                int(cfg.escala))]
@@ -1311,7 +1311,7 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
  <div class="marca"><i></i><span>Despiece 3D</span></div>
  <h1>Del modelo 3D al archivo de corte.</h1>
  <p class="lead">Sube tu maqueta y baja el archivo listo para el taller: piezas numeradas,
- acomodadas en la hoja, con sus capas de corte, grabado y marcado y la tabla de corte adentro.
+ acomodadas en la hoja, con sus capas de corte y grabado y la tabla de corte adentro.
  Sin abrir AutoCAD.</p>
 </header>
 
@@ -1460,11 +1460,6 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
     <input type="text" id="capa_grabado" value="GRABADO" maxlength="60" spellcheck="false">
    </div>
    <div class="capa">
-    <span class="op"><i style="background:var(--marcado)"></i>Marcado</span>
-    <input type="color" id="color_marcado" value="#008000">
-    <input type="text" id="capa_marcado" value="MARCADO" maxlength="60" spellcheck="false">
-   </div>
-   <div class="capa">
     <span class="op"><i style="background:#9ca3af"></i>No se corta</span>
     <span></span>
     <input type="text" id="capa_hoja" value="Defpoints" maxlength="60" spellcheck="false">
@@ -1472,8 +1467,7 @@ input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--line
   </div>
   <p class="nota">Cada línea del archivo sale en la capa de su operación, con el nombre y el color
    que pongas aquí — que es lo único que mira la cabina para saber qué hacer con ella.
-   El número de la pieza va en <b>marcado</b>, aparte del grabado, para que el taller lo pueda
-   bajar de potencia o apagar sin tocar las huellas de ensamble.</p>
+   El número de la pieza va en <b>grabado</b>, en Arial y en una esquina de la pieza.</p>
   <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:16px">
    <label class="chk"><input type="checkbox" id="tabla" checked> Tabla de corte dentro del archivo</label>
    <label class="chk"><input type="checkbox" id="marco" checked> Marco del tamaño de hoja</label>
@@ -1656,15 +1650,15 @@ $('hoja').onchange=e=>{$('cHojaOtra').hidden=e.target.value!=='otra';};
 function resumenTaller(){
   const n=id=>$(id).value.trim().toUpperCase()||id.replace('capa_','').toUpperCase();
   $('resumenTaller').textContent=
-    n('capa_corte')+' · '+n('capa_grabado')+' · '+n('capa_marcado')+
+    n('capa_corte')+' · '+n('capa_grabado')+
     ' · '+n('capa_hoja')+' no se corta'+
     ($('tabla').checked?' · con tabla de corte':' · sin tabla')+
     ($('marco').checked?'':' · sin marco');
 }
-['capa_corte','capa_grabado','capa_marcado','capa_hoja','tabla','marco'].forEach(id=>{
+['capa_corte','capa_grabado','capa_hoja','tabla','marco'].forEach(id=>{
   $(id).addEventListener('input',resumenTaller);
   $(id).addEventListener('change',resumenTaller);});
-['corte','grabado','marcado'].forEach(op=>{
+['corte','grabado'].forEach(op=>{
   $('color_'+op).addEventListener('input',e=>{
     e.target.closest('.capa').querySelector('.op i').style.background=e.target.value;});});
 
@@ -1713,7 +1707,7 @@ $('go').onclick=async()=>{
   fd.append('notas',$('notas').checked?'1':'0');
   fd.append('cajetin',$('cajetin').checked?'1':'0');
   fd.append('alumno',$('alumno').value);
-  ['corte','grabado','marcado'].forEach(op=>{
+  ['corte','grabado'].forEach(op=>{
     fd.append('capa_'+op,$('capa_'+op).value);
     fd.append('color_'+op,$('color_'+op).value);});
   try{
@@ -1758,8 +1752,8 @@ function bloqueEntrega(d){
   const capas=d.capas||{};
   h+=(dwg.n
     ? '<div class="aviso ok"><b>Listo para mandar al taller.</b> '+dwg.n+(dwg.n===1?' hoja':' hojas')+' en DWG y DXF, '+
-      'con las capas '+esc(capas.corte||'CORTE')+' / '+esc(capas.grabado||'GRABADO')+' / '+
-      esc(capas.marcado||'MARCADO')+' y la tabla de corte adentro.</div>'
+      'con las capas '+esc(capas.corte||'CORTE')+' / '+esc(capas.grabado||'GRABADO')+
+      ' y la tabla de corte adentro.</div>'
     : '<div class="aviso"><b>Salió en DXF, no en DWG.</b> El DXF lleva exactamente lo mismo '+
       '—capas, colores y tabla de corte— y lo abre AutoCAD y lo lee toda cabina de corte. '+
       'Para que además salga el .dwg hace falta el ODA File Converter (gratis, '+
@@ -1800,9 +1794,7 @@ function leyenda(d,txtGrabado){
   return '<div class="leyenda">'+
    '<span><i style="color:var(--corte)"></i>'+esc(c.corte||'CORTE')+' — contorno</span>'+
    '<span><i style="color:var(--grabado);border-top-style:dashed"></i>'+
-     esc(c.grabado||'GRABADO')+' — '+txtGrabado+'</span>'+
-   '<span><i style="color:var(--marcado)"></i>'+esc(c.marcado||'MARCADO')+
-     ' — número de pieza</span></div>';
+     esc(c.grabado||'GRABADO')+' — '+txtGrabado+' y número de pieza</span></div>';
 }
 
 function pintarEstructura(d){

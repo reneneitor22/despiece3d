@@ -972,7 +972,7 @@ class ATopeArma(Base):
 
 
 class NumeroDentroDeSuPieza(Base):
-    """28 sep: el numero de pieza (MARCADO) se medía con el ANCHO de la caja y se
+    """28 sep: el numero de pieza se medía con el ANCHO de la caja y se
     ponía en representative_point sin ver si cabía: Merida 65 de 291 se salían de
     su pieza; FZK un M12 de 6 mm sobre una tira de 3.1 mm. El laser marcaba encima
     del corte."""
@@ -990,7 +990,7 @@ class NumeroDentroDeSuPieza(Base):
                     box(160, 30, 240, 110)), 'guia': None}]        # marco de 10 mm
         ruta = self.ruta('h.dxf')
         exportar.hoja_a_dxf(cols, cfg, ruta, 't')
-        textos = list(ezdxf.readfile(ruta).modelspace().query('TEXT[layer=="MARCADO"]'))
+        textos = list(ezdxf.readfile(ruta).modelspace().query('TEXT[layer=="GRABADO"]'))
         self.assertEqual(len(textos), 3)
         for t, col in zip(textos, cols):
             h = t.dxf.height
@@ -1021,8 +1021,11 @@ class NumeroDentroDeSuPieza(Base):
             p = t.dxf.align_point
             return (box(p.x - w / 2, p.y - h / 2, p.x + w / 2, p.y + h / 2) if centro
                     else box(p.x, p.y - h / 2, p.x + w, p.y + h / 2))
-        num = [caja(t, True) for t in msp.query('TEXT[layer=="MARCADO"]')]
-        caj = [caja(t, False) for t in msp.query('TEXT[layer=="GRABADO"]')]
+        # los dos van en GRABADO: el numero centrado en su punto, el cajetin a la izquierda
+        textos = msp.query('TEXT[layer=="GRABADO"]')
+        num = [caja(t, True) for t in textos if t.dxf.halign == 1]
+        caj = [caja(t, False) for t in textos if t.dxf.halign == 0]
+        self.assertTrue(num)
         self.assertTrue(caj, 'el cajetin cabe en la losa y no salio')
         self.assertFalse(any(a.intersects(b) for a in caj for b in num))
 
@@ -1041,8 +1044,10 @@ class CajetinUnaVez(Base):
         self.assertFalse(r.get('error'), r.get('error'))
         dxfs = sorted(f for f in os.listdir(carpeta) if f.endswith('.dxf'))
         self.assertGreater(len(dxfs), 1)
-        con = [f for f in dxfs if list(ezdxf.readfile(os.path.join(carpeta, f))
-                                       .modelspace().query('TEXT[layer=="GRABADO"]'))]
+        # el numero de pieza tambien va en GRABADO pero centrado; el cajetin, a la izquierda
+        con = [f for f in dxfs if [t for t in ezdxf.readfile(os.path.join(carpeta, f))
+                                   .modelspace().query('TEXT[layer=="GRABADO"]')
+                                   if t.dxf.halign == 0]]
         self.assertEqual(con, dxfs[:1])
 
 
@@ -1487,3 +1492,42 @@ class InstructivoPasos(unittest.TestCase):
                          [('PLANTA 1', 'L'), ('PLANTA 1', 'M'), ('PLANTA 2', 'L'), ('PLANTA 2', 'T')])
         self.assertEqual([p['id'] for p in pasos[1][2]], ['M1a', 'M2a', 'M10a'])
         self.assertEqual([p['id'] for p in pasos[0][2]], ['L1', 'L1.2'])
+
+
+class NumeroEnEsquinaYArial(Base):
+    """6 oct 2026, David (el del corte, Alonso): su programa no leia la letra del
+    numero (txt.shx de AutoCAD), lo queria azul para grabarlo en la misma pasada
+    y en una esquina de la pieza, no en el centro."""
+
+    def test_arial_azul_y_en_la_esquina(self):
+        import ezdxf
+        import exportar
+        from despiece import Config
+        from shapely.geometry import box, Point
+        cfg = Config(100, 2.0, 0.0, (300, 200))
+        losa = box(20, 20, 140, 100)
+        # huella de un muro en la esquina de abajo a la izquierda: ahi no va
+        cols = [{'pieza': {'id': 'L7'}, 'geo': losa, 'guia': box(20, 20, 30, 100)}]
+        ruta = self.ruta('e.dxf')
+        exportar.hoja_a_dxf(cols, cfg, ruta, 't')
+        doc = ezdxf.readfile(ruta)
+        self.assertEqual(doc.styles.get('Standard').dxf.font.lower(), 'arial.ttf')
+        self.assertNotIn('MARCADO', [l.dxf.name for l in doc.layers])
+        t, = [t for t in doc.modelspace().query('TEXT') if t.dxf.text == 'L7']
+        self.assertEqual(t.dxf.layer, 'GRABADO')
+        p = Point(t.dxf.align_point.x, t.dxf.align_point.y)
+        # cerca de una esquina libre (derecha), no en el centro (80, 60)
+        esquina = min(p.distance(Point(c)) for c in ((140, 20), (140, 100)))
+        self.assertLess(esquina, 12)
+        h = t.dxf.height
+        w = exportar.ANCHO_LETRA * h * 2
+        caja = box(p.x - w / 2, p.y - h / 2, p.x + w / 2, p.y + h / 2)
+        self.assertTrue(losa.buffer(-exportar.MARGEN_ESQUINA_MM + 0.01).contains(caja))
+        self.assertFalse(cols[0]['guia'].intersects(caja))
+
+    def test_sin_esquina_libre_vuelve_al_centro(self):
+        import exportar
+        from shapely.geometry import box
+        tira = box(0, 0, 40, 3.2)       # cabe a 0.3 del canto, no a 1.5
+        x, y, alto, giro = exportar._rotulo(tira, 'M1')
+        self.assertAlmostEqual(y, 1.6, delta=0.2)
