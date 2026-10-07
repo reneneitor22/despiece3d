@@ -18,7 +18,7 @@ def hoja_png(colocadas, cfg, ruta, px_por_mm=1.6, etiquetas=True):
     img = Image.new('RGB', (w, h), '#ffffff')
     dr = ImageDraw.Draw(img)
     try:
-        fnt = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', int(11 * px_por_mm))
+        fnt = ImageFont.truetype('/System/Library/Fonts/Supplemental/Arial.ttf', int(11 * px_por_mm))
     except Exception:
         fnt = ImageFont.load_default()
 

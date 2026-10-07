@@ -92,13 +92,13 @@ def vista(placas, ancho=760, explotar=0.0, etiquetas=True, titulo='', resaltar=N
             x, y = tx(c)[0]
             # los numeros al final, encima de todo: si van con su placa, la de
             # enfrente los tapa
-            rotulos.append('<text x="%.1f" y="%.1f" font-family="Helvetica,Arial" font-size="12" '
+            rotulos.append('<text x="%.1f" y="%.1f" font-family="Arial,Helvetica" font-size="12" '
                        'font-weight="600" fill="#111" text-anchor="middle" '
                        'dominant-baseline="central" paint-order="stroke" stroke="#fff" '
                        'stroke-width="3">%s</text>' % (x, y, p['id']))
     out.extend(rotulos)
     if titulo:
-        out.append('<text x="14" y="18" font-family="Helvetica,Arial" font-size="12" '
+        out.append('<text x="14" y="18" font-family="Arial,Helvetica" font-size="12" '
                    'fill="#888">%s</text>' % titulo)
     out.append('</svg>')
     return '\n'.join(out)

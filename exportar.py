@@ -144,7 +144,7 @@ def _anillos_de_corte(colocadas):
             for i in orden]
 
 
-# Ancho de una letra en alturas: la M de Helvetica mide 0.83, un digito 0.56. Se
+# Ancho de una letra en alturas: la M de Arial mide 0.83, un digito 0.56. Se
 # toma de mas para que el numero de pieza nunca se salga de su pieza.
 ANCHO_LETRA = 0.75
 
@@ -599,7 +599,7 @@ def guia_html(hojas, piezas, cfg, svgs, nombre, grandes, stats):
 <style>
 :root{color-scheme:light}
 *{box-sizing:border-box}
-body{margin:0;font:14px/1.5 -apple-system,Helvetica,Arial;color:#111;background:#f6f6f7}
+body{margin:0;font:14px/1.5 Arial,Helvetica,sans-serif;color:#111;background:#f6f6f7}
 .wrap{max-width:900px;margin:0 auto;padding:32px 20px 80px}
 h1{font-size:24px;margin:0 0 4px}
 .sub{color:#666;margin:0 0 24px}
@@ -689,7 +689,7 @@ def guia_estructural(hojas, piezas, cfg, svgs, nombre, grandes, stats, info,
 <title>Despiece 3D — %(nombre)s</title>
 <style>
 :root{color-scheme:light}*{box-sizing:border-box}
-body{margin:0;font:14px/1.55 -apple-system,BlinkMacSystemFont,Helvetica,Arial;color:#18181b;background:#f6f6f7}
+body{margin:0;font:14px/1.55 Arial,Helvetica,sans-serif;color:#18181b;background:#f6f6f7}
 .wrap{max-width:940px;margin:0 auto;padding:34px 20px 90px}
 h1{font-size:26px;letter-spacing:-.02em;margin:0 0 4px}
 .sub{color:#71717a;margin:0 0 24px}
@@ -867,7 +867,7 @@ def instructivo_estructural(piezas, cfg, nombre, info, n_hojas, grandes=(), huec
 <style>
 @page{size:letter;margin:12mm}
 :root{color-scheme:light}*{box-sizing:border-box}
-body{margin:0;font:12.5px/1.5 -apple-system,BlinkMacSystemFont,Helvetica,Arial;color:#18181b;background:#fff}
+body{margin:0;font:12.5px/1.5 Arial,Helvetica,sans-serif;color:#18181b;background:#fff}
 h1{font-size:24px;letter-spacing:-.02em;margin:0 0 2px}
 .sub{color:#71717a;margin:0 0 14px}
 .antes{border:2px solid #16a34a;border-radius:10px;padding:10px 14px;margin:0 0 14px}
